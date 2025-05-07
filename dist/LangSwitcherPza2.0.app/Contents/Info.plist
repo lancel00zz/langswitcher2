@@ -68,7 +68,7 @@
 	<key>PythonInfoDict</key>
 	<dict>
 		<key>PythonExecutable</key>
-		<string>/opt/homebrew/opt/python@3.13/bin/python3.13</string>
+		<string>/Users/patrick.zakher/py2app-build/bin/python3</string>
 		<key>PythonLongVersion</key>
 		<string>3.13.3 (main, Apr  8 2025, 13:54:08) [Clang 16.0.0 (clang-1600.0.26.6)]</string>
 		<key>PythonShortVersion</key>
