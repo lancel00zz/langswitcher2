@@ -225,6 +225,9 @@ class LangSwitcherApp(rumps.App):
         self.key_history = []  # Track recent key events for frustration detection
         self.frustration_window = 3.0  # Max time window for pattern detection (seconds)
 
+        # Sync with actual macOS layout at startup
+        self.sync_with_macos_layout()
+
         open_debug_console()
         threading.Thread(target=self.start_listener, daemon=True).start()
 
@@ -279,8 +282,46 @@ class LangSwitcherApp(rumps.App):
             logging.info(f"[FRUSTRATION] Pattern detected! Key {recent[0]['vk_code']} -> Backspace -> Key {recent[2]['vk_code']}")
             self.switch_keyboard_immediately()
 
+    def get_current_macos_layout(self):
+        """Query the actual current macOS keyboard layout"""
+        try:
+            result = subprocess.run([IM_SELECT], capture_output=True, text=True, check=True)
+            current_layout_id = result.stdout.strip()
+            
+            # Map layout ID back to language
+            for lang, (layout_id, icon) in LAYOUTS.items():
+                if layout_id == current_layout_id:
+                    return lang
+            
+            logging.warning(f"[SYNC] Unknown layout ID: {current_layout_id}")
+            return None
+        except Exception as e:
+            logging.error(f"[SYNC] Failed to get current layout: {e}")
+            return None
+
+    def sync_with_macos_layout(self):
+        """Check and fix sync between app state and actual macOS layout"""
+        actual_lang = self.get_current_macos_layout()
+        if actual_lang is None:
+            return  # Can't sync if we can't detect
+            
+        if actual_lang != self.current_lang:
+            logging.info(f"[SYNC] Detected desync: app={self.current_lang}, macOS={actual_lang}")
+            logging.info(f"[SYNC] Fixing app state to match macOS")
+            
+            # Update app state to match reality
+            self.current_lang = actual_lang
+            self.title = LAYOUTS[actual_lang][1]
+            
+            # Clear language buffer to start fresh
+            self.lang_buffer = []
+            logging.info(f"[SYNC] App state synchronized to {actual_lang.upper()}")
+
     def switch_keyboard_immediately(self):
         """Immediately switch to the other keyboard layout"""
+        # First, sync with actual macOS state
+        self.sync_with_macos_layout()
+        
         # Toggle to opposite language
         current = self.current_lang
         target = "fr" if current == "en" else "en"
@@ -291,7 +332,6 @@ class LangSwitcherApp(rumps.App):
             self.current_lang = target
             self.title = icon
             logging.info(f"[FRUSTRATION] Switched {current} → {target}")
-#            rumps.notification("LangSwitcher", "", f"Frustration detected! Switched to {target.upper()}")
         except Exception as e:
             logging.error(f"Frustration switch failed: {e}")
 
@@ -386,6 +426,9 @@ class LangSwitcherApp(rumps.App):
             and all(l == chosen for l in recent)
             and chosen != self.current_lang
         ):
+            # Sync before switching to ensure we have accurate state
+            self.sync_with_macos_layout()
+            
             layout_id, icon = LAYOUTS[chosen]
             try:
                 subprocess.run([IM_SELECT, layout_id], check=True)
