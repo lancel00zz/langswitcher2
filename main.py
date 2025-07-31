@@ -208,7 +208,7 @@ class PrefsWindow(NSObject):
 class LangSwitcherApp(rumps.App):
     def __init__(self):
         icon_emoji = LAYOUTS[DETECTION_LANGS[0]][1]
-        version = rumps.MenuItem(f"Lang Switcher {VERSION} by pza", callback=lambda _: None)
+        version = rumps.MenuItem(f"LangSwitcher {VERSION} by Lanceloz Inc.", callback=lambda _: None)
         super().__init__(
             name="LangSwitcher",
             icon=None,
