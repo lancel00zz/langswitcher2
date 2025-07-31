@@ -17,9 +17,9 @@ if not share_candidates:
     raise RuntimeError("Enchant dict folder not found in Homebrew or system paths")
 ENCHANT_SHARE = share_candidates[0]
 
-APP = ['main95.py']
+APP = ['main.py']
 DATA_FILES = [
-    'main95.conf.json',
+    'main.conf.json',
     'im-select',
     LIBENCHANT,
     # bundle entire enchant share folder
