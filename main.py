@@ -33,7 +33,7 @@ from Cocoa import (
 import objc
 
 # ——— CONFIGURATION ———
-VERSION = "1.1 dev"
+VERSION = "1.1"
 DETECTION_LANGS = ["en", "fr"]
 LAYOUTS = {
     "en": ("com.apple.keylayout.US", "🇺🇸"),
