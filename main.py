@@ -12,6 +12,7 @@ from shutil import which
 import rumps
 import enchant
 from pynput import keyboard
+from pynput.keyboard import Controller
 from langdetect import detect_langs, LangDetectException
 
 from Cocoa import (
@@ -223,7 +224,10 @@ class LangSwitcherApp(rumps.App):
         
         # Frustration pattern detection
         self.key_history = []  # Track recent key events for frustration detection
-        self.frustration_window = 3.0  # Max time window for pattern detection (seconds)
+        self.frustration_window = 3.0  # Max time window for pattern detection (3 seconds)
+        self.keyboard_controller = Controller()  # For keystroke replay
+        self.enable_keystroke_replay = True  # Enable/disable automatic keystroke replay
+        self.last_switch_time = 0  # Prevent rapid double-switching
 
         # Sync with actual macOS layout at startup
         self.sync_with_macos_layout()
@@ -257,11 +261,12 @@ class LangSwitcherApp(rumps.App):
                            if now - e['timestamp'] < self.frustration_window]
         
         # Add new event
-        self.key_history.append({
+        event = {
             'timestamp': now, 
             'vk_code': vk_code, 
             'type': event_type
-        })
+        }
+        self.key_history.append(event)
         
         # Check for frustration pattern
         self.check_frustration_pattern()
@@ -274,13 +279,22 @@ class LangSwitcherApp(rumps.App):
         # Check last 3 events for the frustration pattern
         recent = self.key_history[-3:]
         
-        if (recent[0]['type'] == 'key' and 
-            recent[1]['type'] == 'backspace' and 
-            recent[2]['type'] == 'key' and
-            recent[0]['vk_code'] == recent[2]['vk_code']):
-            
-            logging.info(f"[FRUSTRATION] Pattern detected! Key {recent[0]['vk_code']} -> Backspace -> Key {recent[2]['vk_code']}")
-            self.switch_keyboard_immediately()
+        pattern_match = (recent[0]['type'] == 'key' and 
+                        recent[1]['type'] == 'backspace' and 
+                        recent[2]['type'] == 'key' and
+                        recent[0]['vk_code'] == recent[2]['vk_code'])
+        
+        if pattern_match:
+            # Check if enough time has passed since last switch (prevent rapid switching)
+            now = time.time()
+            if now - self.last_switch_time < 2.0:  # 2-second cooldown
+                logging.debug(f"[FRUSTRATION] Pattern detected but cooldown active ({now - self.last_switch_time:.1f}s ago)")
+                return
+                
+            vk_code = recent[0]['vk_code']  # The key that was pressed twice
+            logging.info(f"[FRUSTRATION] Pattern detected! Key {vk_code} -> Backspace -> Key {vk_code}")
+            self.last_switch_time = now
+            self.switch_keyboard_immediately(vk_code)
 
     def get_current_macos_layout(self):
         """Query the actual current macOS keyboard layout"""
@@ -317,7 +331,52 @@ class LangSwitcherApp(rumps.App):
             self.lang_buffer = []
             logging.info(f"[SYNC] App state synchronized to {actual_lang.upper()}")
 
-    def switch_keyboard_immediately(self):
+    def get_target_character_for_key(self, vk_code, target_layout):
+        """Map VK code to the expected character in target layout"""
+        # Key mapping for common frustration keys
+        key_mappings = {
+            44: {  # One "/" key variant
+                "en": "/",  # US layout produces "/"
+                "fr": "é",  # French Canadian layout produces "é" 
+            },
+            47: {  # Another "/" key variant (the one you're getting!)
+                "en": "/",  # US layout produces "/"
+                "fr": "é",  # French Canadian layout produces "é"
+            },
+            # Add more common frustration patterns as discovered
+        }
+        
+        if vk_code in key_mappings and target_layout in key_mappings[vk_code]:
+            return key_mappings[vk_code][target_layout]
+        return None
+
+    def replay_keystroke(self, vk_code):
+        """Replay the same physical keystroke in the new keyboard layout"""
+        try:
+            # Give the keyboard layout switch more time to take effect
+            time.sleep(0.2)  # 200ms delay - more time for layout switch
+            
+            # Get the target character for this key in the new layout
+            target_char = self.get_target_character_for_key(vk_code, self.current_lang)
+            
+            if target_char:
+                # Type the target character directly
+                logging.debug(f"[FRUSTRATION-DEBUG] Typing target character '{target_char}' for vk={vk_code} in {self.current_lang}")
+                self.keyboard_controller.type(target_char)
+                logging.info(f"[FRUSTRATION] Typed target character '{target_char}'")
+            else:
+                # Fallback: try the VK code approach
+                logging.debug(f"[FRUSTRATION-DEBUG] No character mapping found, trying VK code {vk_code}")
+                from pynput.keyboard import KeyCode
+                key = KeyCode(vk=vk_code)
+                self.keyboard_controller.press(key)
+                self.keyboard_controller.release(key)
+                logging.info(f"[FRUSTRATION] Replayed keystroke vk={vk_code}")
+                
+        except Exception as e:
+            logging.error(f"[FRUSTRATION] Keystroke replay failed: {e}")
+
+    def switch_keyboard_immediately(self, replay_vk_code=None):
         """Immediately switch to the other keyboard layout"""
         # First, sync with actual macOS state
         self.sync_with_macos_layout()
@@ -332,6 +391,16 @@ class LangSwitcherApp(rumps.App):
             self.current_lang = target
             self.title = icon
             logging.info(f"[FRUSTRATION] Switched {current} → {target}")
+            
+            # Clear frustration history to prevent double-switching
+            self.key_history = []
+            
+            # Replay the keystroke in the new layout
+            if replay_vk_code is not None and self.enable_keystroke_replay:
+                self.replay_keystroke(replay_vk_code)
+            elif replay_vk_code is not None:
+                logging.debug(f"[FRUSTRATION] Keystroke replay disabled, skipping vk={replay_vk_code}")
+                
         except Exception as e:
             logging.error(f"Frustration switch failed: {e}")
 
