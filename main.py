@@ -6,6 +6,7 @@ import threading
 import logging
 import pathlib
 import subprocess
+from shutil import which
 
 import rumps
 import enchant
@@ -30,7 +31,7 @@ from Cocoa import (
 import objc
 
 # ——— CONFIGURATION ———
-VERSION = "2.0"
+VERSION = "1.0"
 DETECTION_LANGS = ["en", "fr"]
 LAYOUTS = {
     "en": ("com.apple.keylayout.US", "🇺🇸"),
@@ -55,7 +56,6 @@ BUNDLED_IM = os.path.join(SCRIPT_DIR, 'im-select')
 if os.path.isfile(BUNDLED_IM) and os.access(BUNDLED_IM, os.X_OK):
     IM_SELECT = BUNDLED_IM
 else:
-    from shutil import which
     IM_SELECT = which('im-select') or BUNDLED_IM  # falls back to bundled even if missing
 
 _conf_path = pathlib.Path(__file__).with_suffix(".conf.json")
@@ -94,8 +94,8 @@ class PrefsWindow(NSObject):
         if not self:
             return None
 
-        Ww, Wh = 320, 450
-        rect = NSMakeRect(0, 0, Ww, Wh)
+        WIDTH, HEIGHT = 320, 450
+        rect = NSMakeRect(0, 0, WIDTH, HEIGHT)
         self.win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             rect,
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
@@ -134,15 +134,20 @@ class PrefsWindow(NSObject):
             self.win.contentView().addSubview_(s)
             return s
 
-        self.buf_tf = textf(BUFFER_SIZE, y); label("Buffer size:", y)
+        self.buf_tf = textf(BUFFER_SIZE, y)
+        label("Buffer size:", y)
         y -= SPY
-        self.th_tf = textf(SWITCH_THRESHOLD, y); label("Switch threshold:", y)
+        self.th_tf = textf(SWITCH_THRESHOLD, y)
+        label("Switch threshold:", y)
         y -= SPY
-        self.min_tf = textf(MIN_WORD_LENGTH, y); label("Min word length:", y)
+        self.min_tf = textf(MIN_WORD_LENGTH, y)
+        label("Min word length:", y)
         y -= SPY
-        self.fb_sw = sw(FALLBACK_TO_BUFFER_ON_AMBIGUOUS, y); label("Fallback to buffer:", y)
+        self.fb_sw = sw(FALLBACK_TO_BUFFER_ON_AMBIGUOUS, y)
+        label("Fallback to buffer:", y)
         y -= SPY
-        self.db_sw = sw(DISPLAY_DEBUG_CONSOLE, y); label("Display debug console:", y)
+        self.db_sw = sw(DISPLAY_DEBUG_CONSOLE, y)
+        label("Display debug console:", y)
         y -= SPY
 
         langs = ", ".join(DETECTION_LANGS)
