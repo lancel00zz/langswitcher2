@@ -11,10 +11,14 @@
             "id": "50bc9da896bff0d7",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "readme_pza.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "New tab"
+              "title": "readme_pza"
             }
           }
         ]
@@ -90,6 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
+                "file": "readme_pza.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -99,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks"
+              "title": "Backlinks for readme_pza"
             }
           },
           {
@@ -108,11 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
+                "file": "readme_pza.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links"
+              "title": "Outgoing links from readme_pza"
             }
           },
           {
@@ -136,12 +142,13 @@
             "state": {
               "type": "outline",
               "state": {
+                "file": "readme_pza.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline"
+              "title": "Outline of readme_pza"
             }
           }
         ]
@@ -163,7 +170,17 @@
   },
   "active": "50bc9da896bff0d7",
   "lastOpenFiles": [
-    "requirements.txt",
+    "dist/LangSwitcher.zip",
+    "dist/LangSwitcher.app/Contents/Frameworks/Python.framework/Versions/3.13/_CodeSignature/CodeResources",
+    "dist/LangSwitcher.app/Contents/Frameworks/Python.framework/Versions/3.13/_CodeSignature",
+    "dist/LangSwitcher.app/Contents/_CodeSignature/CodeResources",
+    "dist/LangSwitcher.app/Contents/_CodeSignature",
+    "dist/LangSwitcher.app/Contents/Frameworks/libmpdec.4.0.1.dylib",
+    "dist/LangSwitcher.app/Contents/Frameworks/libcrypto.3.dylib",
+    "dist/LangSwitcher.app/Contents/Frameworks/libssl.3.dylib",
+    "dist/LangSwitcher.app/Contents/Frameworks/liblzma.5.dylib",
+    "dist/LangSwitcher.app/Contents/Frameworks/libaspell.15.dylib",
+    "dist/LangSwitcher.app/Contents/Frameworks/libgmodule-2.0.0.dylib",
     "readme_pza.md"
   ]
 }
