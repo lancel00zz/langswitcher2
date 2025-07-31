@@ -28,3 +28,4 @@ env/
 # App-specific
 *.log
 .coverage
+.obsidian
