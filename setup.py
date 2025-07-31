@@ -10,7 +10,8 @@ if not candidates:
 LIBENCHANT = candidates[0]
 
 # 2) Auto-find enchant dict folder
-share_candidates = glob.glob('/opt/homebrew/share/enchant') + \
+share_candidates = glob.glob('/opt/homebrew/share/enchant-2') + \
+                   glob.glob('/opt/homebrew/share/enchant') + \
                    glob.glob('/usr/local/share/enchant') + \
                    glob.glob('/usr/share/enchant')
 if not share_candidates:
@@ -22,13 +23,13 @@ DATA_FILES = [
     'main.conf.json',
     'im-select',
     LIBENCHANT,
-    # bundle entire enchant share folder
-    (ENCHANT_SHARE, 'share/enchant'),
+    # bundle enchant config files
+    ('share/enchant', [ENCHANT_SHARE + '/AppleSpell.config', ENCHANT_SHARE + '/enchant.ordering']),
 ]
 
 OPTIONS = {
     # standalone bundles Python runtime by default
-    'resources': ['im-select', LIBENCHANT, ENCHANT_SHARE],
+    'resources': ['im-select', LIBENCHANT],
     'includes': [
         'pynput.keyboard._darwin',
         'pynput.mouse._darwin',
