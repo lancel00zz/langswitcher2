@@ -6,6 +6,7 @@ import threading
 import logging
 import pathlib
 import subprocess
+import time
 from shutil import which
 
 import rumps
@@ -219,6 +220,10 @@ class LangSwitcherApp(rumps.App):
         self.word_buffer = ""
         self.lang_buffer = []
         self.current_lang = DETECTION_LANGS[0]
+        
+        # Frustration pattern detection
+        self.key_history = []  # Track recent key events for frustration detection
+        self.frustration_window = 3.0  # Max time window for pattern detection (seconds)
 
         open_debug_console()
         threading.Thread(target=self.start_listener, daemon=True).start()
@@ -240,10 +245,78 @@ class LangSwitcherApp(rumps.App):
     def quit(self, _):
         rumps.quit_application()
 
+    def track_key_event(self, vk_code, event_type):
+        """Track physical key presses for frustration detection"""
+        now = time.time()
+        
+        # Clean old events (keep only recent events within time window)
+        self.key_history = [e for e in self.key_history 
+                           if now - e['timestamp'] < self.frustration_window]
+        
+        # Add new event
+        self.key_history.append({
+            'timestamp': now, 
+            'vk_code': vk_code, 
+            'type': event_type
+        })
+        
+        # Check for frustration pattern
+        self.check_frustration_pattern()
+
+    def check_frustration_pattern(self):
+        """Detect Key -> Backspace -> Same Key pattern"""
+        if len(self.key_history) < 3:
+            return
+            
+        # Check last 3 events for the frustration pattern
+        recent = self.key_history[-3:]
+        
+        if (recent[0]['type'] == 'key' and 
+            recent[1]['type'] == 'backspace' and 
+            recent[2]['type'] == 'key' and
+            recent[0]['vk_code'] == recent[2]['vk_code']):
+            
+            logging.info(f"[FRUSTRATION] Pattern detected! Key {recent[0]['vk_code']} -> Backspace -> Key {recent[2]['vk_code']}")
+            self.switch_keyboard_immediately()
+
+    def switch_keyboard_immediately(self):
+        """Immediately switch to the other keyboard layout"""
+        # Toggle to opposite language
+        current = self.current_lang
+        target = "fr" if current == "en" else "en"
+        
+        layout_id, icon = LAYOUTS[target]
+        try:
+            subprocess.run([IM_SELECT, layout_id], check=True)
+            self.current_lang = target
+            self.title = icon
+            logging.info(f"[FRUSTRATION] Switched {current} → {target}")
+#            rumps.notification("LangSwitcher", "", f"Frustration detected! Switched to {target.upper()}")
+        except Exception as e:
+            logging.error(f"Frustration switch failed: {e}")
+
     def start_listener(self):
         def on_press(key):
             if not self.detecting:
                 return
+            
+            # Track physical keys for frustration pattern detection
+            vk_code = getattr(key, 'vk', None)
+            if vk_code is not None:
+                if key in BACKSPACE_KEYS:
+                    self.track_key_event(vk_code, 'backspace')
+                else:
+                    self.track_key_event(vk_code, 'key')
+            else:
+                # Try alternative key identification for special keys
+                key_name = str(key)
+                if key in BACKSPACE_KEYS:
+                    self.track_key_event(key_name, 'backspace')
+                elif hasattr(key, 'char') and key.char:
+                    # For regular character keys, use a fallback identifier
+                    self.track_key_event(key_name, 'key')
+            
+            # Existing language detection logic
             try:
                 ch = key.char
                 if ch and (ch.isalpha() or ch in VALID_PUNCT):

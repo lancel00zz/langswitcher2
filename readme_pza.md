@@ -1,4 +1,4 @@
-To work in langswitcher2
+**To work in langswitcher2**
 
 1. Modify Code
 2. Test it
@@ -11,3 +11,4 @@ python3 main.py
 ```
 
 3. Press CTRL+C when finished Testing
+
