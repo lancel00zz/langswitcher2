@@ -1,4 +1,6 @@
 langdetect==1.0.9
-pyenchant==3.2.2
 pynput==1.8.1
 rumps==0.4.0
+
+# Optional - for enhanced spell-check fallback
+# pyenchant==3.2.2

@@ -10,7 +10,12 @@ import time
 from shutil import which
 
 import rumps
-import enchant
+try:
+    import enchant
+    ENCHANT_AVAILABLE = True
+except ImportError:
+    ENCHANT_AVAILABLE = False
+    print("Enchant not available - spell-check fallback disabled")
 from pynput import keyboard
 from pynput.keyboard import Controller
 from langdetect import detect_langs, LangDetectException
@@ -71,7 +76,15 @@ logging.basicConfig(
     format="%(asctime)s %(message)s"
 )
 
-dicts = {lang: enchant.Dict(code) for lang, code in DICT_LANGS.items()}
+if ENCHANT_AVAILABLE:
+    try:
+        dicts = {lang: enchant.Dict(code) for lang, code in DICT_LANGS.items()}
+    except Exception as e:
+        print(f"Enchant dictionary error: {e}")
+        ENCHANT_AVAILABLE = False
+        dicts = {}
+else:
+    dicts = {}
 
 
 def open_debug_console():
@@ -465,14 +478,15 @@ class LangSwitcherApp(rumps.App):
 
         if max(scores.values(), default=0.0) < MODEL_CONFIDENCE_THRESHOLD:
             chosen = None
-            for lang in DETECTION_LANGS:
-                d = dicts.get(lang)
-                if d and d.check(text) and not any(
-                    dicts[o].check(text) for o in DETECTION_LANGS if o != lang
-                ):
-                    chosen = lang
-                    logging.debug(f"[DETECT] Dict fallback → {lang}")
-                    break
+            if ENCHANT_AVAILABLE and dicts:
+                for lang in DETECTION_LANGS:
+                    d = dicts.get(lang)
+                    if d and d.check(text) and not any(
+                        dicts[o].check(text) for o in DETECTION_LANGS if o != lang
+                    ):
+                        chosen = lang
+                        logging.debug(f"[DETECT] Dict fallback → {lang}")
+                        break
         else:
             chosen = max(scores, key=scores.get)
 

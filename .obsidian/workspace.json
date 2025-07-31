@@ -173,14 +173,14 @@
     "dist/LangSwitcher.zip",
     "dist/LangSwitcher.app/Contents/Frameworks/Python.framework/Versions/3.13/_CodeSignature/CodeResources",
     "dist/LangSwitcher.app/Contents/Frameworks/Python.framework/Versions/3.13/_CodeSignature",
-    "dist/LangSwitcher.app/Contents/_CodeSignature/CodeResources",
-    "dist/LangSwitcher.app/Contents/_CodeSignature",
-    "dist/LangSwitcher.app/Contents/Frameworks/libmpdec.4.0.1.dylib",
-    "dist/LangSwitcher.app/Contents/Frameworks/libcrypto.3.dylib",
-    "dist/LangSwitcher.app/Contents/Frameworks/libssl.3.dylib",
-    "dist/LangSwitcher.app/Contents/Frameworks/liblzma.5.dylib",
-    "dist/LangSwitcher.app/Contents/Frameworks/libaspell.15.dylib",
-    "dist/LangSwitcher.app/Contents/Frameworks/libgmodule-2.0.0.dylib",
+    "build/bdist.macosx-15.0-arm64/python3.13-standalone/app/python313.zip",
+    "build/bdist.macosx-15.0-arm64/python3.13-standalone/app/collect/pyobjc_framework_Cocoa-11.0.dist-info/top_level.txt",
+    "build/bdist.macosx-15.0-arm64/python3.13-standalone/app/collect/pyobjc_framework_Cocoa-11.0.dist-info/pyobjc-build-info.txt",
+    "build/bdist.macosx-15.0-arm64/python3.13-standalone/app/collect/pyobjc_framework_Cocoa-11.0.dist-info/WHEEL",
+    "build/bdist.macosx-15.0-arm64/python3.13-standalone/app/collect/pyobjc_framework_Cocoa-11.0.dist-info/METADATA",
+    "build/bdist.macosx-15.0-arm64/python3.13-standalone/app/collect/pyobjc_framework_Cocoa-11.0.dist-info/LICENSE.txt",
+    "build/bdist.macosx-15.0-arm64/python3.13-standalone/app/collect/pyobjc_framework_Cocoa-11.0.dist-info/INSTALLER",
+    "build/bdist.macosx-15.0-arm64/python3.13-standalone/app/collect/pyobjc_framework_Cocoa-11.0.dist-info",
     "readme_pza.md"
   ]
 }
