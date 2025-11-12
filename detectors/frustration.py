@@ -25,6 +25,10 @@ class FrustrationDetector:
         30: "] key (US: ] } | FR: $ ¤)",
         50: "` key (US: ` ~ | FR: #/@ \\|)",
         43: ", key (US: , < | FR: , ')",
+        41: ";",
+        39: "'",
+        42: "|",
+        22: "^",
         # Add more as discovered using vk_discovery.py
     }
     
