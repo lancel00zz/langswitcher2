@@ -1,5 +1,6 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 import glob, os
+from version import __version__, __app_name__
 
 # ———————————————————————————————
 # 1) Auto-find libenchant dylib (optional)
@@ -48,10 +49,21 @@ if enchant_providers:
 OPTIONS = {
     # standalone bundles Python runtime by default
     'resources': ['im-select'] + ([LIBENCHANT] if LIBENCHANT else []),
+    'packages': ['detectors', 'switchers', 'ui'],
     'includes': [
         'pynput.keyboard._darwin',
         'pynput.mouse._darwin',
         'Quartz',
+        'config',
+        'version',
+        'detectors',
+        'detectors.language',
+        'detectors.frustration',
+        'switchers',
+        'switchers.keyboard',
+        'ui',
+        'ui.menubar',
+        'ui.settings',
     ],
     'excludes': [
         'test', 'tkinter', 'unittest', 'pydoc', 'distutils'
@@ -66,7 +78,8 @@ OPTIONS = {
 }
 
 setup(
-    name='LangSwitcher',
+    name=__app_name__,
+    version=__version__,
     app=APP,
     data_files=DATA_FILES,
     options={'py2app': OPTIONS},
