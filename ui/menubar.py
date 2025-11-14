@@ -91,7 +91,16 @@ class LangSwitcherApp(rumps.App):
         return os.path.dirname(os.path.abspath(__file__))
     
     def _sync_with_macos(self):
-        """Synchronize app state with macOS keyboard layout"""
+        """
+        Synchronize app state with macOS keyboard layout
+        
+        Note: We use "lazy sync" (sync-on-demand) rather than continuous polling.
+        This is intentional because:
+        - Manual layout changes are rare
+        - Desync is harmless (icon cosmetic, operations guarded)
+        - Next automatic switch corrects any drift
+        - Polling would waste CPU cycles for minimal UX benefit
+        """
         actual_lang = self.keyboard_switcher.sync_state(self.current_lang)
         if actual_lang and actual_lang != self.current_lang:
             self.current_lang = actual_lang
