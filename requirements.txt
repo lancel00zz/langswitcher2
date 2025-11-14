@@ -2,6 +2,7 @@ langdetect==1.0.9
 pynput==1.8.1
 rumps==0.4.0
 pyenchant==3.3.0
+pyobjc-framework-WebKit==12.1
 
 # Note: Requires system enchant library
 # Install with: brew install enchant

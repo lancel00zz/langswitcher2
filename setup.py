@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 import glob, os
-from version import __version__, __app_name__
+from version import __version__, __app_name__, __author__
 
 # ———————————————————————————————
 # 1) Auto-find libenchant dylib (optional)
@@ -24,10 +24,13 @@ DATA_FILES = [
     'im-select',
 ]
 
-# Add enchant files if available
+# DON'T bundle enchant library to avoid GLib conflicts
+# The app will use system enchant from Homebrew
+# if LIBENCHANT:
+#     DATA_FILES.append(LIBENCHANT)
+#     print(f"Bundling enchant library: {LIBENCHANT}")
 if LIBENCHANT:
-    DATA_FILES.append(LIBENCHANT)
-    print(f"Bundling enchant library: {LIBENCHANT}")
+    print(f"Found enchant library: {LIBENCHANT} (using system version)")
 
 if ENCHANT_SHARE and os.path.exists(ENCHANT_SHARE + '/AppleSpell.config'):
     DATA_FILES.append(('share/enchant', [ENCHANT_SHARE + '/AppleSpell.config', ENCHANT_SHARE + '/enchant.ordering']))
@@ -35,25 +38,47 @@ if ENCHANT_SHARE and os.path.exists(ENCHANT_SHARE + '/AppleSpell.config'):
 else:
     print("Enchant config not found - app will work without spell-check fallback")
 
-# Try to find and bundle enchant providers
-enchant_providers = []
-for path in ['/opt/homebrew/lib/enchant-2', '/usr/local/lib/enchant-2']:
-    providers = glob.glob(path + '/*.dylib')
-    if providers:
-        enchant_providers = providers
-        break
-
-if enchant_providers:
-    DATA_FILES.append(('lib/enchant-2', enchant_providers))
+# Don't bundle enchant providers to avoid GLib conflicts
+# The app will use system enchant providers from Homebrew
+# enchant_providers = []
+# for path in ['/opt/homebrew/lib/enchant-2', '/usr/local/lib/enchant-2']:
+#     providers = glob.glob(path + '/*.dylib')
+#     if providers:
+#         enchant_providers = providers
+#         break
+# 
+# if enchant_providers:
+#     DATA_FILES.append(('lib/enchant-2', enchant_providers))
 
 OPTIONS = {
+    # App icon
+    'iconfile': 'icon.icns',
+    
+    # Metadata visible in Finder "Get Info"
+    'plist': {
+        'CFBundleName': __app_name__,
+        'CFBundleDisplayName': __app_name__,
+        'CFBundleIdentifier': 'com.lanceloz.langswitcher',
+        'CFBundleVersion': __version__,
+        'CFBundleShortVersionString': __version__,
+        'NSHumanReadableCopyright': f'© 2025 {__author__}',
+        'LSUIElement': True,  # Makes it a menu bar app (no Dock icon)
+        'LSMinimumSystemVersion': '10.13',
+        'NSHighResolutionCapable': True,
+    },
+    
     # standalone bundles Python runtime by default
-    'resources': ['im-select'] + ([LIBENCHANT] if LIBENCHANT else []),
-    'packages': ['detectors', 'switchers', 'ui'],
+    # Note: Not bundling enchant to avoid GLib conflicts - use system version
+    'resources': ['im-select'],
+    'packages': ['detectors', 'switchers', 'ui', 'WebKit'],
     'includes': [
         'pynput.keyboard._darwin',
         'pynput.mouse._darwin',
         'Quartz',
+        'WebKit',
+        'objc',
+        'Foundation',
+        'AppKit',
         'config',
         'version',
         'detectors',
@@ -73,8 +98,14 @@ OPTIONS = {
         'libglib-2.0.0.dylib',
         'libgio-2.0.0.dylib',
         'libgobject-2.0.0.dylib',
-        'libgthread-2.0.0.dylib'
+        'libgthread-2.0.0.dylib',
+        'libgmodule-2.0.0.dylib',
+        'libintl.8.dylib',
+        'libffi.8.dylib',
     ],
+    
+    # Use system enchant instead of bundled one to avoid GLib conflicts
+    'frameworks': [],
 }
 
 setup(
