@@ -41,7 +41,6 @@ class FrustrationConfig:
     enabled: bool = True
     time_window: float = 1.5  # seconds - window for Key → Backspace pattern
     cooldown: float = 0.2  # seconds - minimal cooldown for rapid switches
-    enable_keystroke_replay: bool = True
     
     def validate(self):
         """Validate configuration values"""
@@ -81,7 +80,6 @@ class LanguageConfig:
 @dataclass
 class AppConfig:
     """Application configuration"""
-    display_debug_console: bool = False
     debug_log_path: str = None
     
     def __post_init__(self):
@@ -116,7 +114,9 @@ class Config:
             with open(self.config_path, 'r') as f:
                 data = json.load(f)
             
-            # Update detection config
+            # Support both old flat format and new nested format
+            
+            # OLD FORMAT (flat keys) - backward compatibility
             if 'BUFFER_SIZE' in data:
                 self.detection.buffer_size = int(data['BUFFER_SIZE'])
             if 'SWITCH_THRESHOLD' in data:
@@ -128,9 +128,35 @@ class Config:
             if 'FALLBACK_TO_BUFFER_ON_AMBIGUOUS' in data:
                 self.detection.fallback_to_buffer_on_ambiguous = bool(data['FALLBACK_TO_BUFFER_ON_AMBIGUOUS'])
             
-            # Update app config
-            if 'DISPLAY_DEBUG_CONSOLE' in data:
-                self.app.display_debug_console = bool(data['DISPLAY_DEBUG_CONSOLE'])
+            # NEW FORMAT (nested dicts)
+            if 'detection' in data:
+                det = data['detection']
+                if 'buffer_size' in det:
+                    self.detection.buffer_size = int(det['buffer_size'])
+                if 'switch_threshold' in det:
+                    self.detection.switch_threshold = int(det['switch_threshold'])
+                if 'min_word_length' in det:
+                    self.detection.min_word_length = int(det['min_word_length'])
+                if 'model_confidence_threshold' in det:
+                    self.detection.model_confidence_threshold = float(det['model_confidence_threshold'])
+                if 'fallback_to_buffer_on_ambiguous' in det:
+                    self.detection.fallback_to_buffer_on_ambiguous = bool(det['fallback_to_buffer_on_ambiguous'])
+                if 'valid_punctuation' in det:
+                    self.detection.valid_punctuation = tuple(det['valid_punctuation'])
+            
+            if 'frustration' in data:
+                frust = data['frustration']
+                if 'enabled' in frust:
+                    self.frustration.enabled = bool(frust['enabled'])
+                if 'time_window' in frust:
+                    self.frustration.time_window = float(frust['time_window'])
+                if 'cooldown' in frust:
+                    self.frustration.cooldown = float(frust['cooldown'])
+            
+            if 'app' in data:
+                app = data['app']
+                if 'debug_log_path' in app:
+                    self.app.debug_log_path = str(app['debug_log_path'])
             
             # Validate after loading
             self.validate()
@@ -151,7 +177,6 @@ class Config:
                 "MIN_WORD_LENGTH": self.detection.min_word_length,
                 "MODEL_CONFIDENCE_THRESHOLD": self.detection.model_confidence_threshold,
                 "FALLBACK_TO_BUFFER_ON_AMBIGUOUS": self.detection.fallback_to_buffer_on_ambiguous,
-                "DISPLAY_DEBUG_CONSOLE": self.app.display_debug_console,
             }
         else:
             # Full configuration export

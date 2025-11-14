@@ -70,8 +70,7 @@ class LangSwitcherApp(rumps.App):
         
         self.frustration_detector = FrustrationDetector(
             time_window=config.frustration.time_window,
-            cooldown=config.frustration.cooldown,
-            enable_replay=config.frustration.enable_keystroke_replay
+            cooldown=config.frustration.cooldown
         )
         
         # Application state
@@ -86,9 +85,28 @@ class LangSwitcherApp(rumps.App):
         threading.Thread(target=self._start_listener, daemon=True).start()
     
     def _get_script_dir(self) -> str:
-        """Get directory containing the script"""
+        """Get directory containing bundled resources (im-select)"""
         import os
-        return os.path.dirname(os.path.abspath(__file__))
+        import sys
+        
+        # When bundled with py2app, resources are in Contents/Resources/
+        if getattr(sys, 'frozen', False):
+            # Running in bundled app
+            # sys._MEIPASS for PyInstaller, resourcePath() for py2app
+            if hasattr(sys, '_MEIPASS'):
+                return sys._MEIPASS
+            else:
+                # py2app: __file__ will be in Resources/lib/python3.13/ui/
+                # We need to go up to Resources/
+                resource_path = os.path.dirname(os.path.abspath(__file__))
+                # Go up from ui/ -> python3.13/ -> lib/ -> Resources/
+                for _ in range(3):
+                    resource_path = os.path.dirname(resource_path)
+                return resource_path
+        else:
+            # Running as script - im-select is in project root
+            # Go up from ui/ to project root
+            return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
     def _sync_with_macos(self):
         """
@@ -141,9 +159,9 @@ class LangSwitcherApp(rumps.App):
     @rumps.clicked("Settings…")
     def settings(self, _):
         """Open settings window"""
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        pw = PrefsWindow.alloc().initWithConfig_(self.config)
-        pw.run()
+        # Always create fresh window to get updated HTML/CSS
+        self.prefs_window = PrefsWindow.alloc().initWithConfig_(self.config)
+        self.prefs_window.show()
     
     @rumps.clicked("Quit")
     def quit(self, _):

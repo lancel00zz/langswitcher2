@@ -35,8 +35,7 @@ class FrustrationDetector:
     def __init__(
         self,
         time_window: float = 2.0,
-        cooldown: float = 3.0,
-        enable_replay: bool = True
+        cooldown: float = 3.0
     ):
         """
         Initialize frustration detector
@@ -44,11 +43,9 @@ class FrustrationDetector:
         Args:
             time_window: Maximum time window for pattern detection (seconds)
             cooldown: Minimum time between consecutive switches (seconds)
-            enable_replay: Whether to automatically replay keystrokes
         """
         self.time_window = time_window
         self.cooldown = cooldown
-        self.enable_replay = enable_replay
         
         self.key_history: List[Dict[str, Any]] = []
         self.last_switch_time = 0.0

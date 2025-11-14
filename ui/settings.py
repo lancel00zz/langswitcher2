@@ -1,49 +1,72 @@
 """
 Settings Window UI
 
-Preferences window for configuring LangSwitcher settings.
+HTML/WebView-based preferences window with collapsible table sections.
 """
 
 import os
 import sys
 import subprocess
+import json
 from Cocoa import (
     NSApp,
-    NSApplication,
     NSWindow,
     NSBackingStoreBuffered,
-    NSTextField,
     NSButton,
-    NSSwitch,
     NSRunningApplication,
     NSApplicationActivateIgnoringOtherApps,
     NSObject,
     NSMakeRect,
     NSWindowStyleMaskTitled,
     NSWindowStyleMaskClosable,
+    NSURL,
 )
 import objc
+from WebKit import WKWebView
 
 from config import Config
+from version import __version__, __app_name__, __author__
+
+
+class MessageHandler(NSObject):
+    """Handles JavaScript messages from WebView"""
+    
+    def initWithCallback_(self, callback):
+        self = objc.super(MessageHandler, self).init()
+        if self:
+            self.callback = callback
+        return self
+    
+    def userContentController_didReceiveScriptMessage_(self, controller, message):
+        """Called when JavaScript sends a message"""
+        self.callback(message.body())
 
 
 class PrefsWindow(NSObject):
-    """Preferences window for LangSwitcher"""
+    """WebView-based preferences window"""
     
     def initWithConfig_(self, config: Config):
-        """
-        Initialize with configuration object
-        
-        Args:
-            config: Configuration instance
-        """
+        """Initialize with configuration"""
         self = objc.super(PrefsWindow, self).init()
         if not self:
             return None
         
         self.config = config
         
-        WIDTH, HEIGHT = 360, 500
+        # Store original values to detect changes
+        self.original_values = {
+            'detection.buffer_size': config.detection.buffer_size,
+            'detection.switch_threshold': config.detection.switch_threshold,
+            'detection.min_word_length': config.detection.min_word_length,
+            'detection.model_confidence_threshold': config.detection.model_confidence_threshold,
+            'detection.fallback_to_buffer_on_ambiguous': config.detection.fallback_to_buffer_on_ambiguous,
+            'frustration.enabled': config.frustration.enabled,
+            'frustration.time_window': config.frustration.time_window,
+            'frustration.cooldown': config.frustration.cooldown,
+        }
+        
+        # Create window
+        WIDTH, HEIGHT = 600, 650
         rect = NSMakeRect(0, 0, WIDTH, HEIGHT)
         self.win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             rect,
@@ -51,149 +74,357 @@ class PrefsWindow(NSObject):
             NSBackingStoreBuffered,
             False
         )
-        self.win.setTitle_("Lang Switcher Preferences")
+        self.win.setTitle_("Settings")
         self.win.center()
         
-        cf = self.win.contentView().frame()
-        W, H = cf.size.width, cf.size.height
-        
-        LABEL_X = W * 0.05
-        FIELD_X = W * 0.60
-        CW, CH = W * 0.35, 24
-        SPY = 50
-        y = H - CH - 30
-        
-        def label(txt, yy):
-            l = NSTextField.alloc().initWithFrame_(NSMakeRect(LABEL_X, yy, CW + 60, CH))
-            l.setStringValue_(txt)
-            l.setBezeled_(False)
-            l.setDrawsBackground_(False)
-            l.setEditable_(False)
-            self.win.contentView().addSubview_(l)
-        
-        def textf(val, yy):
-            t = NSTextField.alloc().initWithFrame_(NSMakeRect(FIELD_X, yy, CW, CH))
-            t.setStringValue_(str(val))
-            self.win.contentView().addSubview_(t)
-            return t
-        
-        def sw(val, yy):
-            s = NSSwitch.alloc().initWithFrame_(NSMakeRect(FIELD_X, yy, 40, CH))
-            s.setState_(1 if val else 0)
-            self.win.contentView().addSubview_(s)
-            return s
-        
-        # Create fields
-        self.buf_tf = textf(config.detection.buffer_size, y)
-        label("Buffer size:", y)
-        y -= SPY
-        
-        self.th_tf = textf(config.detection.switch_threshold, y)
-        label("Switch threshold:", y)
-        y -= SPY
-        
-        self.min_tf = textf(config.detection.min_word_length, y)
-        label("Min word length:", y)
-        y -= SPY
-        
-        self.conf_tf = textf(config.detection.model_confidence_threshold, y)
-        label("Model confidence:", y)
-        y -= SPY
-        
-        self.fb_sw = sw(config.detection.fallback_to_buffer_on_ambiguous, y)
-        label("Fallback to buffer:", y)
-        y -= SPY
-        
-        self.db_sw = sw(config.app.display_debug_console, y)
-        label("Display debug console:", y)
-        y -= SPY
-        
-        # Info labels
-        langs = ", ".join(config.language.detection_langs)
-        dicts_s = ", ".join(
-            config.language.dict_langs[l]
-            for l in config.language.detection_langs
-        )
-        label(f"Detection languages: {langs}", y)
-        y -= CH + 10
-        label(f"Dictionaries: {dicts_s}", y)
-        y -= SPY
-        
-        # Save button
-        bw, bh = 100, 32
-        bx = (W - bw) / 2
-        by = y - 10
-        btn = NSButton.alloc().initWithFrame_(NSMakeRect(bx, by, bw, bh))
-        btn.setTitle_("Save")
-        btn.setBezelStyle_(1)
-        btn.setTarget_(self)
-        btn.setAction_("savePrefs:")
-        self.win.contentView().addSubview_(btn)
+        self.__build_ui()
         
         return self
     
-    def savePrefs_(self, _):
-        """Save preferences and restart application"""
+    def __build_ui(self):
+        """Build WebView UI"""
+        content = self.win.contentView()
+        W, H = content.frame().size.width, content.frame().size.height
+        
+        # Create WebView
+        webview_rect = NSMakeRect(0, 60, W, H - 60)
+        self.webview = WKWebView.alloc().initWithFrame_(webview_rect)
+        
+        # Setup message handler for JavaScript communication
+        message_handler = MessageHandler.alloc().initWithCallback_(self.handle_save)
+        self.webview.configuration().userContentController().addScriptMessageHandler_name_(
+            message_handler, "saveHandler"
+        )
+        
+        # Load HTML
+        html = self.__generate_html()
+        self.webview.loadHTMLString_baseURL_(html, None)
+        
+        content.addSubview_(self.webview)
+        
+        # Bottom buttons
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(W - 110, 14, 90, 32))
+        save_btn.setTitle_("Save")
+        save_btn.setBezelStyle_(1)
+        save_btn.setKeyEquivalent_("\r")
+        save_btn.setTarget_(self)
+        save_btn.setAction_("save:")
+        content.addSubview_(save_btn)
+        
+        cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(W - 210, 14, 90, 32))
+        cancel_btn.setTitle_("Cancel")
+        cancel_btn.setBezelStyle_(1)
+        cancel_btn.setKeyEquivalent_("\x1b")
+        cancel_btn.setTarget_(self)
+        cancel_btn.setAction_("cancel:")
+        content.addSubview_(cancel_btn)
+    
+    def __generate_html(self):
+        """Generate HTML content for settings"""
+        return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<style>
+body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    margin: 10px;
+    background: #f5f5f5;
+}}
+
+details {{
+    margin-bottom: 8px;
+}}
+
+summary {{
+    font-weight: bold;
+    font-size: 12px;
+    padding: 5px 8px;
+    background: #e0e0e0;
+    cursor: pointer;
+    border: 1px solid #ccc;
+    user-select: none;
+}}
+
+summary::-webkit-details-marker {{
+    margin-right: 5px;
+}}
+
+table {{
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    margin-top: 0px;
+    border: 1px solid #ccc;
+}}
+
+td {{
+    padding: 1px 8px;
+    border: 1px solid #ddd;
+    height: 22px;
+    line-height: 1.0;
+    vertical-align: middle;
+}}
+
+td:first-child {{
+    width: 45%;
+    font-weight: normal;
+}}
+
+td:nth-child(2) {{
+    width: 55%;
+}}
+
+input[type="text"], input[type="number"] {{
+    width: 95%;
+    padding: 0px 4px;
+    border: none;
+    background: transparent;
+    font-size: 12px;
+    color: #000;  /* Black for editable */
+    height: 18px;
+    line-height: 1.0;
+    margin: 0;
+}}
+
+input[type="text"]:focus, input[type="number"]:focus {{
+    outline: 1px solid #4A90E2;
+    background: white;
+}}
+
+input[type="checkbox"] {{
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    vertical-align: middle;
+}}
+
+.readonly {{
+    color: #888;  /* Grey for read-only */
+    font-style: italic;
+    background: #f8f8f8;  /* Subtle background hint */
+}}
+</style>
+</head>
+<body>
+
+<details open>
+<summary>detection settings</summary>
+<table>
+<tr>
+    <td>Buffer Size</td>
+    <td><input type="number" id="detection.buffer_size" value="{self.config.detection.buffer_size}"></td>
+</tr>
+<tr>
+    <td>Switch threshold</td>
+    <td><input type="number" id="detection.switch_threshold" value="{self.config.detection.switch_threshold}"></td>
+</tr>
+<tr>
+    <td>Minimum Word Length</td>
+    <td><input type="number" id="detection.min_word_length" value="{self.config.detection.min_word_length}"></td>
+</tr>
+<tr>
+    <td>Model Confidence Threshold</td>
+    <td><input type="number" step="0.01" id="detection.model_confidence_threshold" value="{self.config.detection.model_confidence_threshold}"></td>
+</tr>
+<tr>
+    <td>Fallback to buffer on ambiguous</td>
+    <td><input type="checkbox" id="detection.fallback_to_buffer_on_ambiguous" {'checked' if self.config.detection.fallback_to_buffer_on_ambiguous else ''}></td>
+</tr>
+</table>
+</details>
+
+<details open>
+<summary>frustration detection</summary>
+<table>
+<tr>
+    <td>Enable Frustration detection</td>
+    <td><input type="checkbox" id="frustration.enabled" {'checked' if self.config.frustration.enabled else ''}></td>
+</tr>
+<tr>
+    <td>Time Window (seconds)</td>
+    <td><input type="number" step="0.1" id="frustration.time_window" value="{self.config.frustration.time_window}"></td>
+</tr>
+<tr>
+    <td>Cooldown Period (seconds)</td>
+    <td><input type="number" step="0.1" id="frustration.cooldown" value="{self.config.frustration.cooldown}"></td>
+</tr>
+<tr>
+    <td>Eligible keys</td>
+    <td class="readonly">/ [ ] ` , .</td>
+</tr>
+</table>
+</details>
+
+<details open>
+<summary>application</summary>
+<table>
+<tr>
+    <td>Debug log path</td>
+    <td><span class="readonly">{self.config.app.debug_log_path}</span></td>
+</tr>
+</table>
+</details>
+
+<details open>
+<summary>languages</summary>
+<table>
+<tr>
+    <td>Detection languages</td>
+    <td class="readonly">{', '.join(self.config.language.detection_langs)}</td>
+</tr>
+<tr>
+    <td>EN dictionary</td>
+    <td class="readonly">{self.config.language.dict_langs.get('en', 'N/A')}</td>
+</tr>
+<tr>
+    <td>EN layout</td>
+    <td class="readonly">{self.config.language.layouts['en'][0]}</td>
+</tr>
+<tr>
+    <td>FR dictionary</td>
+    <td class="readonly">{self.config.language.dict_langs.get('fr', 'N/A')}</td>
+</tr>
+<tr>
+    <td>FR layout</td>
+    <td class="readonly">{self.config.language.layouts['fr'][0]}</td>
+</tr>
+</table>
+</details>
+
+<details open>
+<summary>about</summary>
+<table>
+<tr>
+    <td>Version</td>
+    <td class="readonly">{__app_name__} {__version__}</td>
+</tr>
+<tr>
+    <td>Author</td>
+    <td class="readonly">{__author__}</td>
+</tr>
+</table>
+</details>
+
+<script>
+function getFormValues() {{
+    const getValue = (id) => {{
+        const el = document.getElementById(id);
+        if (!el) return null;
+        if (el.type === 'checkbox') return el.checked;
+        return el.value;
+    }};
+    
+    return {{
+        'detection.buffer_size': getValue('detection.buffer_size'),
+        'detection.switch_threshold': getValue('detection.switch_threshold'),
+        'detection.min_word_length': getValue('detection.min_word_length'),
+        'detection.model_confidence_threshold': getValue('detection.model_confidence_threshold'),
+        'detection.fallback_to_buffer_on_ambiguous': getValue('detection.fallback_to_buffer_on_ambiguous'),
+        'detection.valid_punctuation': getValue('detection.valid_punctuation'),
+        'frustration.enabled': getValue('frustration.enabled'),
+        'frustration.time_window': getValue('frustration.time_window'),
+        'frustration.cooldown': getValue('frustration.cooldown'),
+        'app.display_debug_console': getValue('app.display_debug_console'),
+        'app.debug_log_path': getValue('app.debug_log_path'),
+    }};
+}}
+</script>
+
+</body>
+</html>
+"""
+    
+    def handle_save(self, data):
+        """Handle save message from JavaScript"""
+        # This is called by JavaScript, not used currently
+        pass
+    
+    def save_(self, _):
+        """Save settings"""
+        # Get values from HTML form via JavaScript
+        script = "JSON.stringify(getFormValues())"
+        self.webview.evaluateJavaScript_completionHandler_(script, self.process_save)
+    
+    def process_save(self, result, error):
+        """Process the form values from JavaScript"""
+        if error:
+            self.win.orderOut_(None)
+            subprocess.Popen(
+                ["osascript", "-e", f'tell application "System Events" to display dialog "Error reading form" buttons {{"OK"}}'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        
         try:
-            # Update configuration
-            self.config.detection.buffer_size = int(self.buf_tf.stringValue())
-            self.config.detection.switch_threshold = int(self.th_tf.stringValue())
-            self.config.detection.min_word_length = int(self.min_tf.stringValue())
-            self.config.detection.model_confidence_threshold = float(self.conf_tf.stringValue())
-            self.config.detection.fallback_to_buffer_on_ambiguous = bool(self.fb_sw.state())
-            self.config.app.display_debug_console = bool(self.db_sw.state())
+            # Parse JSON result
+            values = json.loads(result)
+            
+            # Check if any values changed
+            changed = False
+            for key in self.original_values:
+                new_val = values[key]
+                old_val = self.original_values[key]
+                
+                # Convert types for comparison
+                if isinstance(old_val, bool):
+                    new_val = bool(new_val)
+                elif isinstance(old_val, int):
+                    new_val = int(new_val)
+                elif isinstance(old_val, float):
+                    new_val = float(new_val)
+                
+                if new_val != old_val:
+                    changed = True
+                    break
+            
+            # Close window
+            self.win.orderOut_(None)
+            
+            # Only save and restart if changes detected
+            if not changed:
+                return
+            
+            # Update config
+            self.config.detection.buffer_size = int(values['detection.buffer_size'])
+            self.config.detection.switch_threshold = int(values['detection.switch_threshold'])
+            self.config.detection.min_word_length = int(values['detection.min_word_length'])
+            self.config.detection.model_confidence_threshold = float(values['detection.model_confidence_threshold'])
+            self.config.detection.fallback_to_buffer_on_ambiguous = bool(values['detection.fallback_to_buffer_on_ambiguous'])
+            
+            self.config.frustration.enabled = bool(values['frustration.enabled'])
+            self.config.frustration.time_window = float(values['frustration.time_window'])
+            self.config.frustration.cooldown = float(values['frustration.cooldown'])
             
             # Validate
             self.config.validate()
             
-            # Save to file
-            self.config.save(detection_only=True)
+            # Save
+            self.config.save(detection_only=False)
             
-            # Close window
-            NSApp.stop_(None)
-            
-            # Notify and restart
-            notify = (
-                'tell application "System Events" to display dialog '
-                '"Settings saved; restarting..." buttons {"OK"}'
-            )
-            subprocess.Popen(
-                ["osascript", "-e", notify],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            
-            # Restart app
+            # Restart silently (no dialog)
             os.execv(sys.executable, [sys.executable] + sys.argv)
             
-        except ValueError as e:
-            # Validation error
-            err = (
-                f'tell application "System Events" to display dialog '
-                f'"Invalid value: {e}" buttons {{"OK"}}'
-            )
-            subprocess.Popen(
-                ["osascript", "-e", err],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
         except Exception as e:
-            # Other error
-            err = (
-                f'tell application "System Events" to display dialog '
-                f'"Error: {e}" buttons {{"OK"}}'
-            )
+            self.win.orderOut_(None)
             subprocess.Popen(
-                ["osascript", "-e", err],
+                ["osascript", "-e", f'tell application "System Events" to display dialog "Error: {e}" buttons {{"OK"}}'],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
     
-    def run(self):
-        """Show window and run modal"""
+    def cancel_(self, _):
+        """Close without saving"""
+        self.win.orderOut_(None)
+    
+    def show(self):
+        """Show window (non-modal)"""
         NSRunningApplication.currentApplication().activateWithOptions_(
             NSApplicationActivateIgnoringOtherApps
         )
         self.win.makeKeyAndOrderFront_(None)
-        NSApp.run()
-
