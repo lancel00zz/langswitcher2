@@ -1,7 +1,8 @@
 langdetect==1.0.9
 pynput==1.8.1
 rumps==0.4.0
+pyenchant==3.3.0
+pyobjc-framework-WebKit==12.1
 
-# Optional - for enhanced spell-check fallback
-# pyenchant==3.2.2
-# this line is cosmetic by pza - can be removed
+# Note: Requires system enchant library
+# Install with: brew install enchant
