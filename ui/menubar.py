@@ -40,15 +40,15 @@ class LangSwitcherApp(rumps.App):
         # Initialize icon
         icon_emoji = config.language.layouts[config.language.detection_langs[0]][1]
         version_item = rumps.MenuItem(
-            f"{__app_name__} {__version__} by {__author__}",
-            callback=lambda _: None
+            f"{__app_name__} {__version__}",
+            callback=None  # Not clickable (greyed out)
         )
         
         super().__init__(
             name=__app_name__,
             icon=None,
             title=icon_emoji,
-            menu=["Toggle Detection", "Open Debug Console", "Settings…", "Quit", None, version_item],
+            menu=["Pause LangSwitcher", "Open Debug Console", "Settings…", "Quit", None, version_item],
             quit_button=None
         )
         
@@ -77,6 +77,7 @@ class LangSwitcherApp(rumps.App):
         self.detecting = True
         self.word_buffer = ""
         self.current_lang = config.language.detection_langs[0]
+        self.base_icon = icon_emoji  # Store base icon without pause indicator
         
         # Sync with actual macOS layout at startup
         self._sync_with_macos()
@@ -124,9 +125,17 @@ class LangSwitcherApp(rumps.App):
             self.current_lang = actual_lang
             icon = self.keyboard_switcher.get_icon(actual_lang)
             if icon:
-                self.title = icon
+                self.base_icon = icon
+                self._update_icon()
             self.language_detector.clear_buffer()
             logging.info(f"[SYNC] Synchronized to {actual_lang}")
+    
+    def _update_icon(self):
+        """Update menu bar icon with pause indicator if paused"""
+        if self.detecting:
+            self.title = self.base_icon
+        else:
+            self.title = f"{self.base_icon}⏸"  # Add pause symbol when paused
     
     def _open_debug_console(self):
         """Open Terminal with tail -f on log file"""
@@ -142,13 +151,22 @@ class LangSwitcherApp(rumps.App):
             stderr=subprocess.DEVNULL,
         )
     
-    @rumps.clicked("Toggle Detection")
-    def toggle(self, _):
+    @rumps.clicked("Pause LangSwitcher")
+    def toggle(self, sender):
         """Toggle language detection on/off"""
         self.detecting = not self.detecting
-        state = "ON" if self.detecting else "OFF"
-        rumps.notification(__app_name__, "", f"Detection is now {state}")
-        logging.info(f"Detection toggled {state}")
+        
+        if self.detecting:
+            sender.title = "Pause LangSwitcher"
+            rumps.notification(__app_name__, "", "LangSwitcher resumed")
+            logging.info("Detection resumed")
+        else:
+            sender.title = "Resume LangSwitcher"
+            rumps.notification(__app_name__, "", "LangSwitcher paused")
+            logging.info("Detection paused")
+        
+        # Update icon to show/hide pause indicator
+        self._update_icon()
     
     @rumps.clicked("Open Debug Console")
     def open_console(self, _):
@@ -179,10 +197,11 @@ class LangSwitcherApp(rumps.App):
             if vk_code is not None:
                 event_type = 'backspace' if key in BACKSPACE_KEYS else 'key'
                 
-                # Check if frustration pattern detected
-                if self.frustration_detector.track_key_event(vk_code, event_type):
-                    self._handle_frustration()
-                    return
+                # Check if frustration pattern detected (only if enabled)
+                if self.config.frustration.enabled:
+                    if self.frustration_detector.track_key_event(vk_code, event_type):
+                        self._handle_frustration()
+                        return
             
             # Language detection logic
             try:
@@ -200,11 +219,12 @@ class LangSwitcherApp(rumps.App):
             if key in WORD_BOUNDARY_KEYS:
                 self._process_word_buffer()
             elif key in BACKSPACE_KEYS:
-                # Track backspace for frustration detection
+                # Track backspace for frustration detection (only if enabled)
                 # Use string identifier since backspace doesn't have reliable VK code
-                if self.frustration_detector.track_key_event('backspace', 'backspace'):
-                    self._handle_frustration()
-                    return
+                if self.config.frustration.enabled:
+                    if self.frustration_detector.track_key_event('backspace', 'backspace'):
+                        self._handle_frustration()
+                        return
                 
                 # Also handle word buffer
                 self.word_buffer = self.word_buffer[:-1]
@@ -243,7 +263,8 @@ class LangSwitcherApp(rumps.App):
             self.current_lang = target_lang
             icon = self.keyboard_switcher.get_icon(target_lang)
             if icon:
-                self.title = icon
+                self.base_icon = icon
+                self._update_icon()
             logging.info(f"[SWITCH] → {target_lang.upper()} (trigger: '{trigger_word}')")
     
     def _handle_frustration(self):
@@ -259,7 +280,8 @@ class LangSwitcherApp(rumps.App):
             self.current_lang = target_lang
             icon = self.keyboard_switcher.get_icon(target_lang)
             if icon:
-                self.title = icon
+                self.base_icon = icon
+                self._update_icon()
             
             # Clear detectors to prevent double-triggering
             self.frustration_detector.clear_history()

@@ -19,20 +19,29 @@ $PYTHON -m pip install --user --break-system-packages setuptools py2app pyobjc-f
 }
 echo ""
 
-# Step 2: Clean previous build
-echo "🧹 Step 2: Cleaning previous build..."
+# Step 2: Set build timestamp
+echo "⏰ Step 2: Setting build timestamp..."
+BUILD_TIME=$(date "+%Y%m%d.%H%M")
+sed -i '' "s/__build__ = \"[0-9]*\.[0-9]*\"/__build__ = \"$BUILD_TIME\"/" version.py
+echo "✅ Build timestamp: $BUILD_TIME"
+echo ""
+
+# Step 3: Clean previous build
+echo "🧹 Step 3: Cleaning previous build..."
 rm -rf build dist
+find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find . -name "*.pyc" -delete 2>/dev/null || true
 echo "✅ Clean complete"
 echo ""
 
-# Step 3: Build the app
-echo "🔨 Step 3: Building LangSwitcher.app..."
+# Step 4: Build the app
+echo "🔨 Step 4: Building LangSwitcher.app..."
 $PYTHON setup.py py2app
 echo "✅ Build complete!"
 echo ""
 
-# Step 4: Test the app
-echo "🧪 Step 4: Testing the app..."
+# Step 5: Test the app
+echo "🧪 Step 5: Testing the app..."
 echo "Running: ./dist/LangSwitcher.app/Contents/MacOS/LangSwitcher"
 echo "(Press Ctrl+C to stop)"
 echo ""

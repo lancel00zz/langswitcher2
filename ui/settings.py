@@ -25,7 +25,7 @@ import objc
 from WebKit import WKWebView
 
 from config import Config
-from version import __version__, __app_name__, __author__
+from version import __version__, __build__, __app_name__, __author__
 
 
 class MessageHandler(NSObject):
@@ -301,7 +301,11 @@ input[type="checkbox"] {{
 <table>
 <tr>
     <td>Version</td>
-    <td class="readonly">{__app_name__} {__version__}</td>
+    <td class="readonly">{__version__}</td>
+</tr>
+<tr>
+    <td>Build</td>
+    <td class="readonly">{__build__}</td>
 </tr>
 <tr>
     <td>Author</td>
@@ -314,8 +318,15 @@ input[type="checkbox"] {{
 function getFormValues() {{
     const getValue = (id) => {{
         const el = document.getElementById(id);
-        if (!el) return null;
-        if (el.type === 'checkbox') return el.checked;
+        if (!el) {{
+            console.log('Element not found:', id);
+            return null;
+        }}
+        if (el.type === 'checkbox') {{
+            console.log('Checkbox', id, '=', el.checked);
+            return el.checked;
+        }}
+        console.log('Field', id, '=', el.value);
         return el.value;
     }};
     
@@ -325,12 +336,9 @@ function getFormValues() {{
         'detection.min_word_length': getValue('detection.min_word_length'),
         'detection.model_confidence_threshold': getValue('detection.model_confidence_threshold'),
         'detection.fallback_to_buffer_on_ambiguous': getValue('detection.fallback_to_buffer_on_ambiguous'),
-        'detection.valid_punctuation': getValue('detection.valid_punctuation'),
         'frustration.enabled': getValue('frustration.enabled'),
         'frustration.time_window': getValue('frustration.time_window'),
         'frustration.cooldown': getValue('frustration.cooldown'),
-        'app.display_debug_console': getValue('app.display_debug_console'),
-        'app.debug_log_path': getValue('app.debug_log_path'),
     }};
 }}
 </script>
@@ -365,50 +373,62 @@ function getFormValues() {{
             # Parse JSON result
             values = json.loads(result)
             
+            import logging
+            logging.info(f"[SETTINGS] Received values: {values}")
+            
+            # Helper to convert boolean values properly
+            def to_bool(val):
+                if val is None:
+                    return False
+                if isinstance(val, bool):
+                    return val
+                if isinstance(val, str):
+                    return val.lower() in ('true', '1', 'yes')
+                return bool(val)
+            
             # Check if any values changed
             changed = False
             for key in self.original_values:
-                new_val = values[key]
+                new_val = values.get(key)
                 old_val = self.original_values[key]
                 
                 # Convert types for comparison
                 if isinstance(old_val, bool):
-                    new_val = bool(new_val)
+                    new_val = to_bool(new_val)
                 elif isinstance(old_val, int):
                     new_val = int(new_val)
                 elif isinstance(old_val, float):
                     new_val = float(new_val)
                 
                 if new_val != old_val:
+                    logging.info(f"[SETTINGS] Changed: {key} = {old_val} → {new_val}")
                     changed = True
                     break
             
-            # Close window
-            self.win.orderOut_(None)
-            
-            # Only save and restart if changes detected
+            # Only update if changes detected
             if not changed:
+                logging.info("[SETTINGS] No changes detected, closing window")
+                self.win.orderOut_(None)
                 return
             
-            # Update config
+            # Update config IN MEMORY ONLY (no file save, no restart)
             self.config.detection.buffer_size = int(values['detection.buffer_size'])
             self.config.detection.switch_threshold = int(values['detection.switch_threshold'])
             self.config.detection.min_word_length = int(values['detection.min_word_length'])
             self.config.detection.model_confidence_threshold = float(values['detection.model_confidence_threshold'])
-            self.config.detection.fallback_to_buffer_on_ambiguous = bool(values['detection.fallback_to_buffer_on_ambiguous'])
+            self.config.detection.fallback_to_buffer_on_ambiguous = to_bool(values['detection.fallback_to_buffer_on_ambiguous'])
             
-            self.config.frustration.enabled = bool(values['frustration.enabled'])
+            self.config.frustration.enabled = to_bool(values['frustration.enabled'])
             self.config.frustration.time_window = float(values['frustration.time_window'])
             self.config.frustration.cooldown = float(values['frustration.cooldown'])
             
             # Validate
             self.config.validate()
             
-            # Save
-            self.config.save(detection_only=False)
-            
-            # Restart silently (no dialog)
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            # Log success and close (changes take effect immediately, no restart)
+            logging.info("[SETTINGS] Config updated in memory - changes active immediately")
+            logging.info(f"[SETTINGS] Frustration detection: {self.config.frustration.enabled}")
+            self.win.orderOut_(None)
             
         except Exception as e:
             self.win.orderOut_(None)
