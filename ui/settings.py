@@ -401,14 +401,13 @@ function getFormValues() {{
                     changed = True
                     break
             
-            # Close window
-            self.win.orderOut_(None)
-            
-            # Only save and restart if changes detected
+            # Only update if changes detected
             if not changed:
+                logging.info("[SETTINGS] No changes detected, closing window")
+                self.win.orderOut_(None)
                 return
             
-            # Update config
+            # Update config IN MEMORY ONLY (no file save, no restart)
             self.config.detection.buffer_size = int(values['detection.buffer_size'])
             self.config.detection.switch_threshold = int(values['detection.switch_threshold'])
             self.config.detection.min_word_length = int(values['detection.min_word_length'])
@@ -422,11 +421,10 @@ function getFormValues() {{
             # Validate
             self.config.validate()
             
-            # Save
-            self.config.save(detection_only=False)
-            
-            # Restart silently (no dialog)
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            # Log success and close (changes take effect immediately, no restart)
+            logging.info("[SETTINGS] Config updated in memory - changes active immediately")
+            logging.info(f"[SETTINGS] Frustration detection: {self.config.frustration.enabled}")
+            self.win.orderOut_(None)
             
         except Exception as e:
             self.win.orderOut_(None)

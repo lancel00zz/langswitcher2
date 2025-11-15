@@ -1,7 +1,11 @@
 """
 LangSwitcher Configuration Module
 
-Centralized configuration management with validation and persistence.
+Centralized configuration management with validation.
+
+Note: As of v2.0.2, settings are IN-MEMORY ONLY (session-based).
+Changes made via UI are temporary and revert to defaults on app restart.
+No config file is written or read after initial load.
 """
 
 import json
@@ -88,7 +92,7 @@ class AppConfig:
 
 
 class Config:
-    """Main configuration manager"""
+    """Main configuration manager (in-memory, session-based as of v2.0.2)"""
     
     def __init__(self, config_path: str = None):
         self.detection = DetectionConfig()
