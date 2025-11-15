@@ -97,8 +97,24 @@ class Config:
         self.app = AppConfig()
         
         if config_path is None:
-            # Use default path relative to main script
-            self.config_path = pathlib.Path(__file__).parent / "main.conf.json"
+            # Determine config path based on run mode
+            import sys
+            
+            # Check if running as bundled app (more reliable detection)
+            is_bundled = (
+                getattr(sys, 'frozen', False) or  # py2app sets this
+                'Contents/Resources' in os.path.abspath(__file__) or  # In .app bundle
+                '.app/Contents' in os.path.abspath(sys.argv[0])  # Executable in .app
+            )
+            
+            if is_bundled:
+                # Running as bundled app - save to Application Support
+                app_support = os.path.expanduser('~/Library/Application Support/LangSwitcher')
+                os.makedirs(app_support, exist_ok=True)
+                self.config_path = pathlib.Path(app_support) / "main.conf.json"
+            else:
+                # Running as script - use project directory
+                self.config_path = pathlib.Path(__file__).parent / "main.conf.json"
         else:
             self.config_path = pathlib.Path(config_path)
         
@@ -169,6 +185,9 @@ class Config:
         Args:
             detection_only: If True, only save detection settings (for UI compatibility)
         """
+        import logging
+        logging.info(f"[CONFIG] Saving to: {self.config_path}")
+        
         if detection_only:
             # Keep backward compatibility with existing settings UI
             data = {

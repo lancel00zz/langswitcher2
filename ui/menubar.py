@@ -14,7 +14,7 @@ from pynput import keyboard
 from Cocoa import NSApplication
 
 from config import Config
-from version import __version__, __app_name__, __author__
+from version import __version__, __app_name__, __author__, __version_full__
 from detectors import LanguageDetector, FrustrationDetector
 from switchers import KeyboardSwitcher
 from ui.settings import PrefsWindow
@@ -40,7 +40,7 @@ class LangSwitcherApp(rumps.App):
         # Initialize icon
         icon_emoji = config.language.layouts[config.language.detection_langs[0]][1]
         version_item = rumps.MenuItem(
-            f"{__app_name__} {__version__} by {__author__}",
+            f"{__app_name__} {__version_full__} by {__author__}",
             callback=lambda _: None
         )
         
@@ -179,10 +179,11 @@ class LangSwitcherApp(rumps.App):
             if vk_code is not None:
                 event_type = 'backspace' if key in BACKSPACE_KEYS else 'key'
                 
-                # Check if frustration pattern detected
-                if self.frustration_detector.track_key_event(vk_code, event_type):
-                    self._handle_frustration()
-                    return
+                # Check if frustration pattern detected (only if enabled)
+                if self.config.frustration.enabled:
+                    if self.frustration_detector.track_key_event(vk_code, event_type):
+                        self._handle_frustration()
+                        return
             
             # Language detection logic
             try:
@@ -200,11 +201,12 @@ class LangSwitcherApp(rumps.App):
             if key in WORD_BOUNDARY_KEYS:
                 self._process_word_buffer()
             elif key in BACKSPACE_KEYS:
-                # Track backspace for frustration detection
+                # Track backspace for frustration detection (only if enabled)
                 # Use string identifier since backspace doesn't have reliable VK code
-                if self.frustration_detector.track_key_event('backspace', 'backspace'):
-                    self._handle_frustration()
-                    return
+                if self.config.frustration.enabled:
+                    if self.frustration_detector.track_key_event('backspace', 'backspace'):
+                        self._handle_frustration()
+                        return
                 
                 # Also handle word buffer
                 self.word_buffer = self.word_buffer[:-1]

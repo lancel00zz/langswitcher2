@@ -12,7 +12,7 @@ import logging
 
 from config import get_config
 from ui import LangSwitcherApp
-from version import __version__, __app_name__
+from version import __version__, __app_name__, __version_full__
 
 
 def setup_logging(log_path: str):
@@ -36,7 +36,7 @@ def setup_logging(log_path: str):
     logging.root.addHandler(file_handler)
     logging.root.addHandler(console_handler)
     
-    logging.info(f"=== {__app_name__} {__version__} Started ===")
+    logging.info(f"=== {__app_name__} {__version_full__} Started ===")
 
 
 def main():
@@ -48,6 +48,7 @@ def main():
     setup_logging(config.app.debug_log_path)
     
     # Log startup info
+    logging.info(f"Config path: {config.config_path}")
     logging.info(f"Languages: {config.language.detection_langs}")
     logging.info(f"Buffer size: {config.detection.buffer_size}")
     logging.info(f"Switch threshold: {config.detection.switch_threshold}")
