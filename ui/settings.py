@@ -25,7 +25,7 @@ import objc
 from WebKit import WKWebView
 
 from config import Config
-from version import __version__, __app_name__, __author__
+from version import __version__, __build__, __app_name__, __author__
 
 
 class MessageHandler(NSObject):
@@ -301,7 +301,11 @@ input[type="checkbox"] {{
 <table>
 <tr>
     <td>Version</td>
-    <td class="readonly">{__app_name__} {__version__}</td>
+    <td class="readonly">{__version__}</td>
+</tr>
+<tr>
+    <td>Build</td>
+    <td class="readonly">{__build__}</td>
 </tr>
 <tr>
     <td>Author</td>
