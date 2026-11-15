@@ -22,7 +22,7 @@ def setup_logging(log_path: str):
         logging.root.removeHandler(handler)
     
     # Create file handler with immediate flushing
-    file_handler = logging.FileHandler(log_path, mode='a')
+    file_handler = logging.FileHandler(log_path, mode='a', encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     

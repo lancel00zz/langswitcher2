@@ -5,11 +5,14 @@ Detects language of typed text using langdetect and optional enchant dictionary.
 """
 
 import logging
-from typing import Optional, List, Dict, Set
+from copy import copy
+from typing import Optional, List, Dict
 from collections import deque
 
 try:
-    from langdetect import detect_langs, LangDetectException
+    from langdetect import detect_langs, LangDetectException, DetectorFactory
+    # langdetect otherwise varies its guesses for the same short input.
+    DetectorFactory.seed = 0
     LANGDETECT_AVAILABLE = True
 except ImportError:
     LANGDETECT_AVAILABLE = False
@@ -22,11 +25,8 @@ except ImportError:
     ENCHANT_AVAILABLE = False
     logging.info("enchant not available - spell-check fallback disabled")
 
-# Common unambiguous words for quick detection
-# These are high-frequency words unique to each language, used to:
-# 1. Speed up detection (no dictionary lookup needed)
-# 2. Disambiguate words that exist in both dictionaries
-# This is standard NLP practice (used by Google, Microsoft, Apple)
+# Common words for quick detection. Words shared by multiple language lists
+# remain ambiguous; list order must never decide their language.
 COMMON_WORDS = {
     "en": {
         # 2-letter words (high-frequency, unambiguous)
@@ -104,6 +104,7 @@ class LanguageDetector:
         
         # Language detection buffer (circular)
         self.lang_buffer = deque(maxlen=buffer_size)
+        self._last_detection_is_evidence = False
         
         # Initialize dictionaries if available
         self.dicts = {}
@@ -128,8 +129,10 @@ class LanguageDetector:
             current_lang: Current keyboard layout language (for ambiguous first words)
             
         Returns:
-            Detected language code, or None if too short
+            Detected or contextual language code, or None if too short.
+            Contextual fallbacks never count toward the switch threshold.
         """
+        self._last_detection_is_evidence = False
         # Check minimum length
         if len(text) < self.min_word_length:
             logging.debug(f"Word too short: '{text}' (< {self.min_word_length})")
@@ -137,25 +140,34 @@ class LanguageDetector:
         
         logging.debug(f"Detecting language for: '{text}'")
         
+        # Shared words are known to be ambiguous. A statistical guess must not
+        # override that knowledge, even when the model reports high confidence.
+        if len(self._common_word_matches(text)) > 1:
+            return self._fallback_detection(text, current_lang)
+
         # 1. Check common words first (fast, unambiguous, context-aware)
         chosen = self._detect_common_word(text)
         
         # 2. Try dictionary if not a common word (comprehensive)
         if chosen is None and self.dicts:
-            chosen = self._detect_with_dict(text)
+            matches = self._dictionary_matches(text)
+            if len(matches) > 1:
+                return self._fallback_detection(text, current_lang)
+            if matches:
+                chosen = matches[0]
+                logging.debug(f"Dictionary match: {chosen}")
         
         # 3. Fallback to langdetect model (statistical)
         if chosen is None:
             chosen = self._detect_with_model(text)
         
-        # Final fallback to buffer or current keyboard layout
+        # A fallback supplies context, not a new independent vote.
         if chosen is None:
-            chosen = self._fallback_detection(text, current_lang)
+            return self._fallback_detection(text, current_lang)
         
-        # Add to buffer (always add if we have a language)
-        if chosen:
-            self.lang_buffer.append(chosen)
-            logging.debug(f"Buffer: {list(self.lang_buffer)}")
+        self.lang_buffer.append(chosen)
+        self._last_detection_is_evidence = True
+        logging.debug(f"Buffer: {list(self.lang_buffer)}")
         
         return chosen
     
@@ -174,16 +186,20 @@ class LanguageDetector:
             logging.debug(f"Skipping common words for acronym: '{text}'")
             return None
         
-        # Check common words with lowercase comparison
-        # This handles: "je" and "Je" (at sentence start)
-        text_lower = text.lower()
-        
-        for lang in self.detection_langs:
-            if lang in COMMON_WORDS and text_lower in COMMON_WORDS[lang]:
-                logging.debug(f"Common word match: '{text}' → {lang}")
-                return lang
+        matches = self._common_word_matches(text)
+        if len(matches) == 1:
+            logging.debug(f"Common word match: '{text}' → {matches[0]}")
+            return matches[0]
         
         return None
+
+    def _common_word_matches(self, text: str) -> List[str]:
+        """Return every configured language whose common list contains text."""
+        text_lower = text.lower()
+        return [
+            lang for lang in self.detection_langs
+            if text_lower in COMMON_WORDS.get(lang, ())
+        ]
     
     def _detect_with_model(self, text: str) -> Optional[str]:
         """Detect using langdetect model"""
@@ -206,7 +222,7 @@ class LanguageDetector:
         
         # Check if max confidence meets threshold
         max_score = max(scores.values(), default=0.0)
-        if max_score < self.confidence_threshold:
+        if max_score <= 0.0 or max_score < self.confidence_threshold:
             logging.debug(f"Confidence too low: {max_score:.2f} < {self.confidence_threshold}")
             return None
         
@@ -215,26 +231,15 @@ class LanguageDetector:
     
     def _detect_with_dict(self, text: str) -> Optional[str]:
         """Detect using enchant dictionary"""
-        for lang in self.detection_langs:
-            d = self.dicts.get(lang)
-            if not d:
-                continue
-            
-            # Check if word is in this dict but not in others
-            if d.check(text):
-                # Make sure it's not in other dictionaries
-                other_matches = [
-                    other_lang for other_lang in self.detection_langs
-                    if other_lang != lang and 
-                    self.dicts.get(other_lang) and 
-                    self.dicts[other_lang].check(text)
-                ]
-                
-                if not other_matches:
-                    logging.debug(f"Dictionary match: {lang}")
-                    return lang
-        
-        return None
+        matches = self._dictionary_matches(text)
+        return matches[0] if len(matches) == 1 else None
+
+    def _dictionary_matches(self, text: str) -> List[str]:
+        """Return all dictionary matches so known ambiguity stays neutral."""
+        return [
+            lang for lang in self.detection_langs
+            if lang in self.dicts and self.dicts[lang].check(text)
+        ]
     
     def _fallback_detection(self, text: str, current_lang: Optional[str] = None) -> Optional[str]:
         """Fallback when detection is ambiguous"""
@@ -263,7 +268,7 @@ class LanguageDetector:
         Returns:
             True if switch should happen
         """
-        if target_lang == current_lang:
+        if not self._last_detection_is_evidence or target_lang == current_lang:
             return False
         
         # Check if we have enough detections
@@ -282,9 +287,17 @@ class LanguageDetector:
         
         return False
     
+    def fresh(self):
+        """Start independent evidence without waiting for an old worker task."""
+        detector = copy(self)
+        detector.lang_buffer = deque(maxlen=self.buffer_size)
+        detector._last_detection_is_evidence = False
+        return detector
+
     def clear_buffer(self):
         """Clear the detection buffer"""
         self.lang_buffer.clear()
+        self._last_detection_is_evidence = False
         logging.debug("Detection buffer cleared")
     
     def get_buffer_state(self) -> List[str]:

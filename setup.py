@@ -86,6 +86,8 @@ OPTIONS = {
         'detectors.frustration',
         'switchers',
         'switchers.keyboard',
+        'switchers.macos',
+        'keyboard_events',
         'ui',
         'ui.menubar',
         'ui.settings',

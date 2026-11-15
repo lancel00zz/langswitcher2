@@ -1,14 +1,13 @@
 """
 Frustration Pattern Detection Module
 
-Detects user frustration patterns like: Key → Backspace → Same Key
-and triggers automatic keyboard layout switching with keystroke replay.
+Detects an immediate correction gesture: layout-specific key -> Backspace.
+The caller switches the layout; this detector never injects keystrokes.
 """
 
 import time
 import logging
 from typing import Optional, Dict, Any, List
-from pynput.keyboard import Controller, KeyCode
 
 
 class FrustrationDetector:
@@ -34,29 +33,29 @@ class FrustrationDetector:
     
     def __init__(
         self,
-        time_window: float = 2.0,
-        cooldown: float = 3.0
+        time_window: float = 1.5,
+        cooldown: float = 0.0
     ):
         """
         Initialize frustration detector
         
         Args:
-            time_window: Maximum time window for pattern detection (seconds)
-            cooldown: Minimum time between consecutive switches (seconds)
+            time_window: Legacy configuration value; no longer gates gestures.
+            cooldown: Legacy configuration value; no longer gates gestures.
         """
         self.time_window = time_window
         self.cooldown = cooldown
         
         self.key_history: List[Dict[str, Any]] = []
-        self.last_switch_time = 0.0
-        self.keyboard_controller = Controller()
+        self.last_switch_time: Optional[float] = None
+        self._last_triggered_key: Optional[Any] = None
     
     def track_key_event(self, vk_code: Any, event_type: str) -> bool:
         """
         Track a key event and check for frustration pattern
         
-        Only tracks frustration-eligible keys (special punctuation that differs
-        between US and French layouts). Regular letters are ignored.
+        Only an eligible key immediately followed by Backspace can trigger.
+        Other input cancels the gesture instead of being hidden from history.
         
         Args:
             vk_code: Virtual key code or key identifier
@@ -65,56 +64,46 @@ class FrustrationDetector:
         Returns:
             True if frustration pattern detected on eligible key, False otherwise
         """
-        # FILTER: Only track frustration-eligible keys
-        # Letters like 'a', 's', etc. are ignored - they're the same in both layouts
-        if event_type == 'key' and vk_code not in self.FRUSTRATION_ELIGIBLE_KEYS:
-            # This is a letter or safe key - don't track for frustration
-            logging.debug(f"[FRUSTRATION] Ignoring non-eligible key VK={vk_code}")
-            return False
-        
-        # Log tracking for eligible keys
-        if event_type == 'key':
-            logging.info(f"[FRUSTRATION] Tracking eligible key VK={vk_code}")
-        else:
-            logging.info(f"[FRUSTRATION] Tracking backspace")
-        
-        now = time.time()
-        
-        # Clean old events
-        self.key_history = [
-            e for e in self.key_history
-            if now - e['timestamp'] < self.time_window
-        ]
-        
-        # Add new event
+        # Timing is diagnostic only. Adjacency decides whether this Backspace
+        # corrects an eligible key, regardless of typing speed or prior switches.
+        now = time.monotonic()
         event = {
             'timestamp': now,
             'vk_code': vk_code,
             'type': event_type
         }
-        self.key_history.append(event)
-        
-        # Check for pattern
-        return self._check_pattern()
+        if event_type == 'key':
+            if vk_code not in self.FRUSTRATION_ELIGIBLE_KEYS:
+                self.clear_history()
+                return False
+
+            # Remember only the immediately preceding physical key.
+            self.key_history = [event]
+        elif event_type == 'backspace':
+            if len(self.key_history) == 1:
+                self.key_history.append(event)
+                return self._check_pattern(now)
+            else:
+                # Holding Backspace or deleting several characters is editing,
+                # not confirmation of a wrong keyboard layout.
+                self.clear_history()
+        else:
+            self.clear_history()
+        return False
     
-    def _check_pattern(self) -> bool:
+    def _check_pattern(self, now: Optional[float] = None) -> bool:
         """
         Check if frustration pattern exists in recent history
         
-        Pattern: Eligible Key → Backspace (within time window)
-        
-        When user types a special punctuation key (like [, /, etc.) and immediately
-        backspaces, we assume they got the wrong character due to wrong layout.
-        We switch layouts immediately so they can retype correctly.
+        Pattern: Eligible Key -> Backspace, with no intervening physical input.
         
         Returns:
-            True if pattern detected and not in cooldown
+            True if the immediately preceding key is eligible
         """
-        if len(self.key_history) < 2:
+        if len(self.key_history) != 2:
             return False
         
-        # Check last 2 events: Eligible Key → Backspace
-        recent = self.key_history[-2:]
+        recent = self.key_history
         
         pattern_match = (
             recent[0]['type'] == 'key' and
@@ -125,24 +114,13 @@ class FrustrationDetector:
             return False
         
         vk_code = recent[0]['vk_code']
-        logging.info(
-            f"[FRUSTRATION] ✨ PATTERN DETECTED! "
-            f"VK {vk_code} → Backspace"
-        )
-        
-        # Check cooldown
-        now = time.time()
-        time_since_last = now - self.last_switch_time
-        
-        if time_since_last < self.cooldown:
-            logging.info(
-                f"[FRUSTRATION] ⏸️  Cooldown active "
-                f"({time_since_last:.1f}s ago) - ignoring"
-            )
-            return False
-        
-        logging.info(f"[FRUSTRATION] 🚀 TRIGGERING LAYOUT SWITCH!")
+        now = time.monotonic() if now is None else now
+        # Consume the gesture so an extra or held Backspace cannot toggle again.
+        # Every new key -> Backspace pair is eligible, even at the same timestamp.
+        self.clear_history()
+        logging.info(f"[FRUSTRATION] Immediate correction gesture for VK={vk_code}")
         self.last_switch_time = now
+        self._last_triggered_key = vk_code
         return True
     
     def get_last_triggered_key(self) -> Optional[Any]:
@@ -152,15 +130,11 @@ class FrustrationDetector:
         Returns:
             VK code or None if no recent pattern
         """
-        if len(self.key_history) >= 2:
-            recent = self.key_history[-2:]
-            if (recent[0]['type'] == 'key' and
-                recent[1]['type'] == 'backspace'):
-                return recent[0]['vk_code']
-        return None
+        return self._last_triggered_key
     
     def clear_history(self):
         """Clear key history (useful after a switch to prevent double-triggering)"""
         self.key_history.clear()
+        self._last_triggered_key = None
         logging.debug("[FRUSTRATION] History cleared")
 
