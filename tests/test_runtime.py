@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import Future
+from contextlib import ExitStack
 import Quartz
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -10,6 +11,7 @@ from unittest.mock import Mock, patch
 from pynput import keyboard
 from config import Config
 from ui.menubar import LangSwitcherApp
+from keyboard_access import AccessReport, KeyboardAccessError
 
 
 class ImmediateExecutor:
@@ -42,6 +44,7 @@ class RuntimeTests(unittest.TestCase):
         self.app.word_buffer = ''
         self.app.current_lang = 'en'
         self.app.detecting = True
+        self.app._access_ready = True
         self.app.keyboard_switcher = Mock()
         self.app.keyboard_switcher.sync_state.return_value = 'en'
         self.app.keyboard_switcher.get_icon.return_value = 'flag'
@@ -294,6 +297,136 @@ class RuntimeTests(unittest.TestCase):
         self.app._reset_detection()
         self.app._finish_word(result, detector, epoch, 'bonjour')
         self.app.keyboard_switcher.switch_to.assert_not_called()
+
+
+class PermissionRecoveryTests(unittest.TestCase):
+    """A denied tap leaves a recoverable menu app, never a false active state."""
+
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.config = Config(Path(self.directory.name) / 'settings.json')
+        self.executor = self.stack.enter_context(patch('ui.menubar.ThreadPoolExecutor')).return_value
+        self.switcher = self.stack.enter_context(patch('ui.menubar.KeyboardSwitcher')).return_value
+        self.tap = self.stack.enter_context(patch('ui.menubar.KeyboardEventTap')).return_value
+        self.deferred = self.stack.enter_context(patch('ui.menubar.AppHelper.callAfter'))
+        self.stack.enter_context(patch('ui.menubar.rumps.MenuItem'))
+        self.stack.enter_context(patch.object(LangSwitcherApp, '_sync_with_macos'))
+        self.stack.enter_context(patch.object(LangSwitcherApp, '_update_icon'))
+        self.stack.enter_context(patch.object(LangSwitcherApp, '_make_detectors',
+                                             return_value=(Mock(), Mock())))
+        self.stack.enter_context(patch('ui.menubar.collect_access_report', side_effect=lambda **kwargs:
+                                      AccessReport(kwargs.get('keyboard_access', False), True, True,
+                                                   kwargs.get('reason', ''), kwargs.get('details', ''))))
+        def init_menu(app, **kwargs):
+            app._menu = {name: Mock(title=name) for name in kwargs['menu'] if isinstance(name, str)}
+        self.stack.enter_context(patch('ui.menubar.rumps.App.__init__', init_menu))
+        self.denied = AccessReport(False, True, True, 'Keyboard access is unavailable', 'filtered mask')
+
+    def make_app(self, denied=False):
+        if denied:
+            self.tap.start.side_effect = KeyboardAccessError(self.denied)
+        app = LangSwitcherApp(self.config)
+        self.addCleanup(app.close)
+        return app
+
+    def test_denied_startup_stays_paused_and_schedules_recovery(self):
+        app = self.make_app(denied=True)
+        self.assertFalse(app.detecting)
+        self.assertFalse(app._access_ready)
+        self.assertIs(app._access_report, self.denied)
+        self.deferred.assert_called_once_with(app.open_keyboard_access, None)
+        self.switcher.close.assert_not_called()
+        self.executor.shutdown.assert_not_called()
+
+    def test_successful_startup_does_not_open_recovery(self):
+        app = self.make_app()
+        self.assertTrue(app.detecting)
+        self.assertTrue(app._access_ready)
+        self.deferred.assert_not_called()
+
+    def test_retry_after_permission_refresh_activates_detection(self):
+        app = self.make_app(denied=True)
+        self.tap.start.side_effect = None
+        report = app._retry_keyboard_access()
+        self.assertTrue(report.keyboard_access)
+        self.assertTrue(app._access_ready)
+        self.assertTrue(app.detecting)
+
+    def test_resume_cannot_activate_a_denied_tap(self):
+        app = self.make_app(denied=True)
+        with patch.object(app, 'open_keyboard_access') as show:
+            app.toggle(Mock())
+        self.assertFalse(app.detecting)
+        show.assert_called_once_with(None)
+
+    def test_manual_recheck_preserves_an_intentional_pause(self):
+        app = self.make_app()
+        app.detecting = False
+        app._detection_requested = False
+        report = app._retry_keyboard_access()
+        self.assertTrue(report.keyboard_access)
+        self.assertFalse(app.detecting)
+
+    def test_pause_survives_a_failed_check_then_successful_recovery(self):
+        app = self.make_app()
+        app.detecting = False
+        app._detection_requested = False
+        self.tap.start.side_effect = KeyboardAccessError(self.denied)
+        self.assertFalse(app._retry_keyboard_access().keyboard_access)
+        self.tap.start.side_effect = None
+        self.assertTrue(app._retry_keyboard_access().keyboard_access)
+        self.assertFalse(app.detecting)
+
+    def test_post_start_sync_failure_stops_tap_and_clears_ready_state(self):
+        app = self.make_app()
+        app._sync_with_macos.side_effect = RuntimeError('input-source sync failed')
+        with self.assertLogs(level='ERROR'):
+            report = app._retry_keyboard_access()
+        self.assertFalse(report.keyboard_access)
+        self.assertFalse(app._access_ready)
+        self.assertFalse(app.detecting)
+        self.assertEqual(app.menu['Pause LangSwitcher'].title, 'Resume LangSwitcher')
+        self.assertEqual(self.tap.stop.call_count, 3)
+
+    def test_opening_access_menu_refreshes_previously_healthy_status(self):
+        app = self.make_app()
+        self.tap.start.side_effect = KeyboardAccessError(self.denied)
+        with patch('ui.menubar.KeyboardAccessWindow') as window_class:
+            app.open_keyboard_access(None)
+        self.assertFalse(app.detecting)
+        self.assertFalse(app._access_ready)
+        window_class.alloc.return_value.initWithReport_.assert_called_once_with(self.denied)
+
+    def test_ordinary_startup_failure_cleans_resources_and_is_not_permissions(self):
+        self.tap.start.side_effect = RuntimeError('run-loop source failed')
+        with self.assertRaisesRegex(RuntimeError, 'run-loop source failed'):
+            LangSwitcherApp(self.config)
+        self.switcher.close.assert_called_once()
+        self.executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+        self.deferred.assert_not_called()
+
+    def test_failed_recheck_stops_tap_and_cannot_switch_from_old_worker(self):
+        app = self.make_app()
+        detector, epoch = app.language_detector, app._detection_epoch
+        result = Future()
+        result.set_result('fr')
+        self.tap.start.side_effect = KeyboardAccessError(self.denied)
+        app._retry_keyboard_access()
+        app._finish_word(result, detector, epoch, 'bonjour')
+        self.assertFalse(app.detecting)
+        self.switcher.switch_to.assert_not_called()
+
+    def test_close_is_idempotent(self):
+        app = self.make_app()
+        self.tap.stop.reset_mock()
+        app.close()
+        app.close()
+        self.tap.stop.assert_called_once()
+        self.switcher.close.assert_called_once()
+        self.executor.shutdown.assert_called_once()
 
 
 if __name__ == '__main__':

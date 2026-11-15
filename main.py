@@ -7,8 +7,15 @@ based on language detection, with frustration pattern detection for manual
 override assistance.
 """
 
-import os
 import logging
+
+from Cocoa import (
+    NSAlert,
+    NSAlertStyleCritical,
+    NSApplication,
+    NSApplicationActivateIgnoringOtherApps,
+    NSRunningApplication,
+)
 
 from config import get_config
 from ui import LangSwitcherApp
@@ -39,6 +46,21 @@ def setup_logging(log_path: str):
     logging.info(f"=== {__app_name__} {__version_full__} Started ===")
 
 
+def show_startup_error(error: Exception, log_path: str):
+    """Show the actual startup condition without guessing its cause."""
+    # Constructor failures can happen before rumps creates NSApplication.
+    NSApplication.sharedApplication()
+    NSRunningApplication.currentApplication().activateWithOptions_(
+        NSApplicationActivateIgnoringOtherApps
+    )
+    alert = NSAlert.alloc().init()
+    alert.setAlertStyle_(NSAlertStyleCritical)
+    alert.setMessageText_("LangSwitcher could not start")
+    alert.setInformativeText_(f"{error}\n\nFor more details, see the log:\n{log_path}")
+    alert.addButtonWithTitle_("Quit")
+    alert.runModal()
+
+
 def main():
     """Main entry point"""
     # Load configuration
@@ -56,9 +78,28 @@ def main():
     logging.info(f"Model confidence: {config.detection.model_confidence_threshold}")
     logging.info(f"Frustration detection: {config.frustration.enabled}")
     
-    # Create and run app
-    app = LangSwitcherApp(config)
-    app.run()
+    # A missing layout or another ordinary startup failure should give the
+    # user the actionable error, rather than py2app's generic launch dialog.
+    app = None
+    startup_error = None
+    try:
+        app = LangSwitcherApp(config)
+        app.run()
+    except Exception as error:
+        logging.exception("LangSwitcher could not start")
+        startup_error = error
+    finally:
+        if app is not None:
+            try:
+                app.close()
+            except Exception:
+                logging.exception("Could not clean up LangSwitcher resources")
+
+    if startup_error is not None:
+        try:
+            show_startup_error(startup_error, config.app.debug_log_path)
+        except Exception:
+            logging.exception("Could not display the startup error dialog")
 
 
 if __name__ == "__main__":
