@@ -1,14 +1,13 @@
 """
 LangSwitcher Configuration Module
 
-Centralized configuration management with validation.
-
-Note: As of v2.0.2, settings are IN-MEMORY ONLY (session-based).
-Changes made via UI are temporary and revert to defaults on app restart.
-No config file is written or read after initial load.
+Validated configuration with atomic persistence and legacy format support.
 """
 
 import json
+import logging
+import tempfile
+from copy import deepcopy
 import pathlib
 import os
 from typing import Dict, Any, Tuple
@@ -23,7 +22,7 @@ class DetectionConfig:
     min_word_length: int = 2
     model_confidence_threshold: float = 0.65
     fallback_to_buffer_on_ambiguous: bool = True
-    valid_punctuation: Tuple[str, ...] = ("'", "'", "-")
+    valid_punctuation: Tuple[str, ...] = ("'", "’", "-")
     
     def validate(self):
         """Validate configuration values"""
@@ -43,15 +42,6 @@ class DetectionConfig:
 class FrustrationConfig:
     """Frustration detection configuration"""
     enabled: bool = True
-    time_window: float = 1.5  # seconds - window for Key → Backspace pattern
-    cooldown: float = 0.2  # seconds - minimal cooldown for rapid switches
-    
-    def validate(self):
-        """Validate configuration values"""
-        if self.time_window <= 0:
-            raise ValueError("time_window must be positive")
-        if self.cooldown < 0:
-            raise ValueError("cooldown cannot be negative")
 
 
 @dataclass
@@ -92,7 +82,9 @@ class AppConfig:
 
 
 class Config:
-    """Main configuration manager (in-memory, session-based as of v2.0.2)"""
+    """Load legacy settings and persist validated settings."""
+
+    SCHEMA_VERSION = 2
     
     def __init__(self, config_path: str = None):
         self.detection = DetectionConfig()
@@ -134,88 +126,113 @@ class Config:
             with open(self.config_path, 'r') as f:
                 data = json.load(f)
             
+            candidate = deepcopy(self)
             # Support both old flat format and new nested format
             
             # OLD FORMAT (flat keys) - backward compatibility
             if 'BUFFER_SIZE' in data:
-                self.detection.buffer_size = int(data['BUFFER_SIZE'])
+                candidate.detection.buffer_size = int(data['BUFFER_SIZE'])
             if 'SWITCH_THRESHOLD' in data:
-                self.detection.switch_threshold = int(data['SWITCH_THRESHOLD'])
+                candidate.detection.switch_threshold = int(data['SWITCH_THRESHOLD'])
             if 'MIN_WORD_LENGTH' in data:
-                self.detection.min_word_length = int(data['MIN_WORD_LENGTH'])
+                candidate.detection.min_word_length = int(data['MIN_WORD_LENGTH'])
             if 'MODEL_CONFIDENCE_THRESHOLD' in data:
-                self.detection.model_confidence_threshold = float(data['MODEL_CONFIDENCE_THRESHOLD'])
+                candidate.detection.model_confidence_threshold = float(data['MODEL_CONFIDENCE_THRESHOLD'])
             if 'FALLBACK_TO_BUFFER_ON_AMBIGUOUS' in data:
-                self.detection.fallback_to_buffer_on_ambiguous = bool(data['FALLBACK_TO_BUFFER_ON_AMBIGUOUS'])
+                candidate.detection.fallback_to_buffer_on_ambiguous = bool(data['FALLBACK_TO_BUFFER_ON_AMBIGUOUS'])
             
             # NEW FORMAT (nested dicts)
             if 'detection' in data:
                 det = data['detection']
                 if 'buffer_size' in det:
-                    self.detection.buffer_size = int(det['buffer_size'])
+                    candidate.detection.buffer_size = int(det['buffer_size'])
                 if 'switch_threshold' in det:
-                    self.detection.switch_threshold = int(det['switch_threshold'])
+                    candidate.detection.switch_threshold = int(det['switch_threshold'])
                 if 'min_word_length' in det:
-                    self.detection.min_word_length = int(det['min_word_length'])
+                    candidate.detection.min_word_length = int(det['min_word_length'])
                 if 'model_confidence_threshold' in det:
-                    self.detection.model_confidence_threshold = float(det['model_confidence_threshold'])
+                    candidate.detection.model_confidence_threshold = float(det['model_confidence_threshold'])
                 if 'fallback_to_buffer_on_ambiguous' in det:
-                    self.detection.fallback_to_buffer_on_ambiguous = bool(det['fallback_to_buffer_on_ambiguous'])
+                    candidate.detection.fallback_to_buffer_on_ambiguous = bool(det['fallback_to_buffer_on_ambiguous'])
                 if 'valid_punctuation' in det:
-                    self.detection.valid_punctuation = tuple(det['valid_punctuation'])
+                    candidate.detection.valid_punctuation = tuple(det['valid_punctuation'])
             
             if 'frustration' in data:
                 frust = data['frustration']
                 if 'enabled' in frust:
-                    self.frustration.enabled = bool(frust['enabled'])
-                if 'time_window' in frust:
-                    self.frustration.time_window = float(frust['time_window'])
-                if 'cooldown' in frust:
-                    self.frustration.cooldown = float(frust['cooldown'])
-            
+                    candidate.frustration.enabled = bool(frust['enabled'])
             if 'app' in data:
                 app = data['app']
                 if 'debug_log_path' in app:
-                    self.app.debug_log_path = str(app['debug_log_path'])
+                    candidate.app.debug_log_path = str(app['debug_log_path'])
             
             # Validate after loading
-            self.validate()
+            candidate.validate()
+            self.detection = candidate.detection
+            self.frustration = candidate.frustration
+            self.app = candidate.app
         except Exception as e:
             print(f"Warning: Failed to load config from {self.config_path}: {e}")
     
-    def save(self, detection_only: bool = True):
-        """Save configuration to JSON file
-        
-        Args:
-            detection_only: If True, only save detection settings (for UI compatibility)
-        """
-        import logging
-        logging.info(f"[CONFIG] Saving to: {self.config_path}")
-        
-        if detection_only:
-            # Keep backward compatibility with existing settings UI
-            data = {
-                "BUFFER_SIZE": self.detection.buffer_size,
-                "SWITCH_THRESHOLD": self.detection.switch_threshold,
-                "MIN_WORD_LENGTH": self.detection.min_word_length,
-                "MODEL_CONFIDENCE_THRESHOLD": self.detection.model_confidence_threshold,
-                "FALLBACK_TO_BUFFER_ON_AMBIGUOUS": self.detection.fallback_to_buffer_on_ambiguous,
-            }
-        else:
-            # Full configuration export
-            data = {
-                "detection": asdict(self.detection),
-                "frustration": asdict(self.frustration),
-                "app": asdict(self.app),
-            }
-        
-        with open(self.config_path, 'w') as f:
-            json.dump(data, f, indent=2)
-    
+    def editable_values(self):
+        """Return the settings shown by the preferences window."""
+        return {
+            'detection.buffer_size': self.detection.buffer_size,
+            'detection.switch_threshold': self.detection.switch_threshold,
+            'detection.min_word_length': self.detection.min_word_length,
+            'detection.model_confidence_threshold': self.detection.model_confidence_threshold,
+            'detection.fallback_to_buffer_on_ambiguous': self.detection.fallback_to_buffer_on_ambiguous,
+            'frustration.enabled': self.frustration.enabled,
+        }
+
+    def with_settings(self, values):
+        """Parse and validate a settings edit without mutating the live config."""
+        candidate = deepcopy(self)
+        for key, old_value in self.editable_values().items():
+            value = values[key]
+            if isinstance(old_value, bool):
+                if isinstance(value, str):
+                    if value.lower() not in ('true', 'false', '1', '0'):
+                        raise ValueError(f"Invalid boolean for {key}")
+                    value = value.lower() in ('true', '1')
+                elif not isinstance(value, bool):
+                    raise ValueError(f"Invalid boolean for {key}")
+            else:
+                value = type(old_value)(value)
+            section, name = key.split('.')
+            setattr(getattr(candidate, section), name, value)
+        candidate.validate()
+        return candidate
+
+    def save(self):
+        """Atomically persist all settings, including correction detection."""
+        self.validate()
+        data = {
+            'schema_version': self.SCHEMA_VERSION,
+            'detection': asdict(self.detection),
+            'frustration': asdict(self.frustration),
+            'app': asdict(self.app),
+        }
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode='w', encoding='utf-8', dir=self.config_path.parent,
+                    prefix=self.config_path.name + '.', suffix='.tmp', delete=False) as stream:
+                temporary_path = pathlib.Path(stream.name)
+                json.dump(data, stream, indent=2, allow_nan=False)
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, self.config_path)
+            logging.info("[CONFIG] Saved settings to %s", self.config_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
     def validate(self):
         """Validate all configuration sections"""
         self.detection.validate()
-        self.frustration.validate()
         self.language.validate()
 
 

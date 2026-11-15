@@ -9,6 +9,7 @@ import sys
 import subprocess
 import json
 from Cocoa import (
+    NSAlert,
     NSApp,
     NSWindow,
     NSBackingStoreBuffered,
@@ -53,18 +54,8 @@ class PrefsWindow(NSObject):
         
         self.config = config
         
-        # Store original values to detect changes
-        self.original_values = {
-            'detection.buffer_size': config.detection.buffer_size,
-            'detection.switch_threshold': config.detection.switch_threshold,
-            'detection.min_word_length': config.detection.min_word_length,
-            'detection.model_confidence_threshold': config.detection.model_confidence_threshold,
-            'detection.fallback_to_buffer_on_ambiguous': config.detection.fallback_to_buffer_on_ambiguous,
-            'frustration.enabled': config.frustration.enabled,
-            'frustration.time_window': config.frustration.time_window,
-            'frustration.cooldown': config.frustration.cooldown,
-        }
-        
+        self.on_save = None
+
         # Create window
         WIDTH, HEIGHT = 600, 650
         rect = NSMakeRect(0, 0, WIDTH, HEIGHT)
@@ -240,22 +231,15 @@ input[type="checkbox"] {{
 
 <details open>
 <summary>frustration detection</summary>
+<p>Switch when a layout-specific key is immediately followed by Backspace. Retyping uses the new layout. Every correction can switch immediately, with no cooldown.</p>
 <table>
 <tr>
     <td>Enable Frustration detection</td>
     <td><input type="checkbox" id="frustration.enabled" {'checked' if self.config.frustration.enabled else ''}></td>
 </tr>
 <tr>
-    <td>Time Window (seconds)</td>
-    <td><input type="number" step="0.1" id="frustration.time_window" value="{self.config.frustration.time_window}"></td>
-</tr>
-<tr>
-    <td>Cooldown Period (seconds)</td>
-    <td><input type="number" step="0.1" id="frustration.cooldown" value="{self.config.frustration.cooldown}"></td>
-</tr>
-<tr>
-    <td>Eligible keys</td>
-    <td class="readonly">/ [ ] ` , .</td>
+    <td>Eligible physical keys (US labels)</td>
+    <td class="readonly">/ . [ ] ` , ; ' &#92; 6</td>
 </tr>
 </table>
 </details>
@@ -337,8 +321,6 @@ function getFormValues() {{
         'detection.model_confidence_threshold': getValue('detection.model_confidence_threshold'),
         'detection.fallback_to_buffer_on_ambiguous': getValue('detection.fallback_to_buffer_on_ambiguous'),
         'frustration.enabled': getValue('frustration.enabled'),
-        'frustration.time_window': getValue('frustration.time_window'),
-        'frustration.cooldown': getValue('frustration.cooldown'),
     }};
 }}
 </script>
@@ -360,84 +342,21 @@ function getFormValues() {{
     
     def process_save(self, result, error):
         """Process the form values from JavaScript"""
-        if error:
-            self.win.orderOut_(None)
-            subprocess.Popen(
-                ["osascript", "-e", f'tell application "System Events" to display dialog "Error reading form" buttons {{"OK"}}'],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return
-        
         try:
-            # Parse JSON result
+            if error:
+                raise ValueError("Could not read the settings form")
             values = json.loads(result)
-            
-            import logging
-            logging.info(f"[SETTINGS] Received values: {values}")
-            
-            # Helper to convert boolean values properly
-            def to_bool(val):
-                if val is None:
-                    return False
-                if isinstance(val, bool):
-                    return val
-                if isinstance(val, str):
-                    return val.lower() in ('true', '1', 'yes')
-                return bool(val)
-            
-            # Check if any values changed
-            changed = False
-            for key in self.original_values:
-                new_val = values.get(key)
-                old_val = self.original_values[key]
-                
-                # Convert types for comparison
-                if isinstance(old_val, bool):
-                    new_val = to_bool(new_val)
-                elif isinstance(old_val, int):
-                    new_val = int(new_val)
-                elif isinstance(old_val, float):
-                    new_val = float(new_val)
-                
-                if new_val != old_val:
-                    logging.info(f"[SETTINGS] Changed: {key} = {old_val} → {new_val}")
-                    changed = True
-                    break
-            
-            # Only update if changes detected
-            if not changed:
-                logging.info("[SETTINGS] No changes detected, closing window")
-                self.win.orderOut_(None)
-                return
-            
-            # Update config IN MEMORY ONLY (no file save, no restart)
-            self.config.detection.buffer_size = int(values['detection.buffer_size'])
-            self.config.detection.switch_threshold = int(values['detection.switch_threshold'])
-            self.config.detection.min_word_length = int(values['detection.min_word_length'])
-            self.config.detection.model_confidence_threshold = float(values['detection.model_confidence_threshold'])
-            self.config.detection.fallback_to_buffer_on_ambiguous = to_bool(values['detection.fallback_to_buffer_on_ambiguous'])
-            
-            self.config.frustration.enabled = to_bool(values['frustration.enabled'])
-            self.config.frustration.time_window = float(values['frustration.time_window'])
-            self.config.frustration.cooldown = float(values['frustration.cooldown'])
-            
-            # Validate
-            self.config.validate()
-            
-            # Log success and close (changes take effect immediately, no restart)
-            logging.info("[SETTINGS] Config updated in memory - changes active immediately")
-            logging.info(f"[SETTINGS] Frustration detection: {self.config.frustration.enabled}")
+            if self.on_save is None:
+                raise RuntimeError("Settings callback is not available")
+            self.on_save(values)
             self.win.orderOut_(None)
-            
-        except Exception as e:
-            self.win.orderOut_(None)
-            subprocess.Popen(
-                ["osascript", "-e", f'tell application "System Events" to display dialog "Error: {e}" buttons {{"OK"}}'],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-    
+        except Exception as exc:
+            # Keep the form open and retain the previous live settings on failure.
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("Settings could not be saved")
+            alert.setInformativeText_(str(exc))
+            alert.runModal()
+
     def cancel_(self, _):
         """Close without saving"""
         self.win.orderOut_(None)
