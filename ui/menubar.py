@@ -21,6 +21,8 @@ from version import __version__, __app_name__, __author__
 from detectors import LanguageDetector, FrustrationDetector
 from switchers import KeyboardSwitcher
 from keyboard_events import KeyboardEventTap
+from keyboard_access import KeyboardAccessError, collect_access_report
+from ui.permissions_window import KeyboardAccessWindow
 from ui.settings import PrefsWindow
 
 
@@ -66,6 +68,13 @@ class LangSwitcherApp(rumps.App):
         self._rewritten_keyups = {}
         self._detection_epoch = 0
         self._word_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='language-detection')
+        self.keyboard_switcher = None
+        self._event_tap = None
+        self._access_ready = False
+        self._detection_requested = True
+        self._access_report = None
+        self._permissions_window = None
+        self._closed = False
         
         # Initialize icon
         icon_emoji = config.language.layouts[config.language.detection_langs[0]][1]
@@ -78,31 +87,87 @@ class LangSwitcherApp(rumps.App):
             name=__app_name__,
             icon=None,
             title=icon_emoji,
-            menu=["Pause LangSwitcher", "Open Debug Console", "Settings…", "Quit", None, version_item],
+            menu=["Pause LangSwitcher", "Keyboard Access…", "Open Debug Console", "Settings…", "Quit", None, version_item],
             quit_button=None
         )
         
-        # Initialize components
-        self.keyboard_switcher = KeyboardSwitcher(
-            config.language.layouts,
-            script_dir=self._get_script_dir()
-        )
-        
-        self.language_detector, self.frustration_detector = self._make_detectors(config)
+        try:
+            self.keyboard_switcher = KeyboardSwitcher(
+                config.language.layouts,
+                script_dir=self._get_script_dir()
+            )
+            self.language_detector, self.frustration_detector = self._make_detectors(config)
+            self.detecting = True
+            self.word_buffer = ""
+            self.current_lang = config.language.detection_langs[0]
+            self.base_icon = icon_emoji
+            self._sync_with_macos()
 
-        # Application state
-        self.detecting = True
-        self.word_buffer = ""
-        self.current_lang = config.language.detection_langs[0]
-        self.base_icon = icon_emoji  # Store base icon without pause indicator
-        
-        # Sync with actual macOS layout at startup
-        self._sync_with_macos()
-        
-        # The active tap and TIS calls run on the main Cocoa runloop. Returning
-        # an event forwards it only after correction handling has completed.
-        self._event_tap = KeyboardEventTap(self._intercept_event)
-        self._event_tap.start()
+            # A created tap can still be denied key events. Keep the menu alive
+            # in setup mode until the actual keyboard access check succeeds.
+            self._event_tap = KeyboardEventTap(self._intercept_event)
+            report = self._try_keyboard_access()
+        except Exception:
+            self.close()
+            raise
+        if not report.keyboard_access:
+            AppHelper.callAfter(self.open_keyboard_access, None)
+
+    def _try_keyboard_access(self):
+        """Recreate and validate our own tap, preserving an intentional pause."""
+        self.detecting = False
+        self._access_ready = False
+        self._reset_detection()
+        self._event_tap.stop()
+        try:
+            self._event_tap.start()
+        except KeyboardAccessError as error:
+            self._access_report = error.report
+            logging.warning("Keyboard access unavailable: %s (%s)",
+                            error.report.reason, error.report.details)
+        else:
+            self._access_ready = True
+            self.detecting = self._detection_requested
+            self._sync_with_macos()
+            self._access_report = collect_access_report(keyboard_access=True)
+            logging.info("Keyboard event access verified")
+        self.menu["Pause LangSwitcher"].title = (
+            "Pause LangSwitcher" if self.detecting else "Resume LangSwitcher"
+        )
+        self._update_icon()
+        return self._access_report
+
+    def _retry_keyboard_access(self):
+        """Handle a window retry without allowing a Cocoa callback to crash."""
+        try:
+            return self._try_keyboard_access()
+        except Exception as error:
+            logging.exception("Could not restart keyboard access")
+            self._access_ready = False
+            self.detecting = False
+            self._detection_epoch += 1
+            self._event_tap.stop()
+            self._access_report = collect_access_report(
+                reason="check_failed",
+                details=str(error),
+            )
+            self.menu["Pause LangSwitcher"].title = "Resume LangSwitcher"
+            self._update_icon()
+            return self._access_report
+
+    @rumps.clicked("Keyboard Access…")
+    def open_keyboard_access(self, _):
+        """Show the same recovery guide automatically and from the menu."""
+        if self._closed:
+            return
+        if self._access_ready:
+            self._retry_keyboard_access()
+        if self._permissions_window is None:
+            self._permissions_window = KeyboardAccessWindow.alloc().initWithReport_(self._access_report)
+            self._permissions_window.on_retry = self._retry_keyboard_access
+        else:
+            self._permissions_window.set_report(self._access_report)
+        self._permissions_window.show()
     
     @staticmethod
     def _make_detectors(config):
@@ -179,7 +244,9 @@ class LangSwitcherApp(rumps.App):
     
     def _update_icon(self):
         """Update menu bar icon with pause indicator if paused"""
-        if self.detecting:
+        if not self._access_ready:
+            self.title = f"{self.base_icon}⚠️"
+        elif self.detecting:
             self.title = self.base_icon
         else:
             self.title = f"{self.base_icon}⏸"  # Add pause symbol when paused
@@ -201,8 +268,15 @@ class LangSwitcherApp(rumps.App):
     @rumps.clicked("Pause LangSwitcher")
     def toggle(self, sender):
         """Toggle language detection on/off"""
+        if not self._access_ready:
+            self._detection_requested = True
+            report = self._retry_keyboard_access()
+            if not report.keyboard_access:
+                self.open_keyboard_access(None)
+            return
         with self._state_lock:
             self.detecting = not self.detecting
+            self._detection_requested = self.detecting
             self._reset_detection()
             if self.detecting:
                 self._sync_with_macos()
@@ -236,10 +310,23 @@ class LangSwitcherApp(rumps.App):
     @rumps.clicked("Quit")
     def quit(self, _):
         """Quit application"""
-        self._event_tap.stop()
-        self.keyboard_switcher.close()
-        self._word_executor.shutdown(wait=False, cancel_futures=True)
+        self.close()
         rumps.quit_application()
+
+    def close(self):
+        """Release every initialized component, including on partial startup."""
+        if self._closed:
+            return
+        self._closed = True
+        self.detecting = False
+        self._detection_requested = False
+        for resource in (self._event_tap, self.keyboard_switcher):
+            if resource is not None:
+                try:
+                    resource.stop() if resource is self._event_tap else resource.close()
+                except Exception:
+                    logging.exception("Could not close keyboard resources")
+        self._word_executor.shutdown(wait=False, cancel_futures=True)
     
     def _intercept_event(self, event_type, event):
         """Normalize queued retries before forwarding the original OS event."""
