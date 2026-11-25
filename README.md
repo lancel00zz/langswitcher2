@@ -8,10 +8,10 @@ A macOS menu bar app that switches between **U.S.** and **French Canadian–CSA*
 
 Typed `/` but wanted `é`?
 
-1. Press **Backspace** to delete `/`. LangSwitcher immediately changes the keyboard layout.
-2. Press the same physical key again to get **`é`**.
+1. Press **Backspace** to delete `/`. This prepares the correction.
+2. Within **2.5 seconds**, press the same physical key again. LangSwitcher changes the layout, shows the flag if enabled, and types **`é`**.
 
-Only supported keys that differ between the two layouts trigger this Backspace behaviour. The correction expires after **2.5 seconds of inactivity**.
+Only supported keys that differ between the two layouts trigger this behaviour. Backspace alone does not switch layouts. If you wait 2.5 seconds or longer before retyping, the key works normally without switching.
 
 ## Features
 

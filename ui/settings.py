@@ -315,7 +315,7 @@ select {{
 
 <details open>
 <summary>frustration detection</summary>
-<p>Switch when Backspace deletes a layout-specific character, including after deleting characters typed after it. For example, type <code>/c</code>, then press Backspace twice: the switch happens when <code>/</code> is deleted. A space, Enter, or a 2.5-second pause ends the correction. Every new correction can switch immediately.</p>
+<p>To change <code>/</code> to <code>é</code>, delete it with Backspace, then press the same physical key within 2.5 seconds. The retry switches the layout and shows the flag. For <code>/c</code>, delete both characters before retrying. A space, Enter, or 2.5 seconds of inactivity cancels the correction.</p>
 <table>
 <tr>
     <td>Enable Frustration detection</td>

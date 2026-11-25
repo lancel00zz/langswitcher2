@@ -33,7 +33,11 @@ class RuntimeTests(unittest.TestCase):
         self.app.config = self.config
         self.app._state_lock = threading.RLock()
         self.app._shortcut_keys_down = set()
-        self.app._expected_retry = None
+        self.app._pending_correction = None
+        self.now = [10.0]
+        clock = patch('ui.menubar.time.monotonic', lambda: self.now[0])
+        clock.start()
+        self.addCleanup(clock.stop)
         self.app._rewritten_keyups = {}
         self.app._detection_epoch = 0
         self.app._word_executor = ImmediateExecutor()
@@ -176,42 +180,117 @@ class RuntimeTests(unittest.TestCase):
         detector.track_key_event.assert_not_called()
         detector.clear_history.assert_called_once()
 
-    def test_courant_slash_backspace_switches_before_first_retry(self):
-        for char in 'courant ':
-            self.app._on_press(keyboard.KeyCode.from_char(char))
-        slash = keyboard.KeyCode.from_char('/', vk=44)
-        self.app.keyboard_switcher.toggle.return_value = 'fr'
-        with patch('detectors.frustration.time.monotonic', side_effect=[10.0, 10.1, 10.2]):
-            self.app._on_press(slash)
-            self.app.keyboard_switcher.toggle.assert_not_called()
-            self.app._on_press(keyboard.Key.backspace)
-            # The layout must already be French before the retry is pressed.
-            self.app.keyboard_switcher.toggle.assert_called_once_with('en', ['en', 'fr'])
-            self.assertEqual(self.app.current_lang, 'fr')
-            self.assertEqual(self.app.word_buffer, '')
-            self.app._on_press(keyboard.KeyCode.from_char('é', vk=44))
-        self.app.keyboard_switcher.toggle.assert_called_once()
-        self.assertEqual(self.app.word_buffer, 'é')
+    def test_courant_correction_waits_for_same_key_retry_before_switching(self):
+        self.setup_virtual_layouts()
+        for vk, text in ((44, '/'), (51, '')):
+            self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(vk, text))
+        self.app.keyboard_switcher.toggle.assert_not_called()
+        self.app._layout_overlay.show_language.assert_not_called()
+        self.assertEqual(self.app.current_lang, 'en')
+        retry = self.raw_key(44, '/')
+        self.app._intercept_event(Quartz.kCGEventKeyDown, retry)
+        self.assertEqual(self.text(retry), 'é')
+        self.assertEqual(self.app.current_lang, 'fr')
+        self.app.keyboard_switcher.toggle.assert_called_once_with('en', ['en', 'fr'])
+        self.app._layout_overlay.show_language.assert_called_once_with('fr')
 
-    def test_french_correction_switches_back_before_next_slash(self):
-        self.app.current_lang = 'fr'
-        self.app.keyboard_switcher.sync_state.return_value = 'fr'
-        self.app.keyboard_switcher.toggle.return_value = 'en'
-        self.app._on_press(keyboard.KeyCode.from_char('é', vk=44))
-        self.app._on_press(keyboard.Key.backspace)
+    def test_french_correction_switches_back_on_same_physical_key_retry(self):
+        actual = self.setup_virtual_layouts()
+        actual['language'] = self.app.current_lang = 'fr'
+        self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(44, 'é'))
+        self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(51))
+        self.assertEqual(self.app.current_lang, 'fr')
+        retry = self.raw_key(44, 'é')
+        self.app._intercept_event(Quartz.kCGEventKeyDown, retry)
+        self.assertEqual(self.text(retry), '/')
+        self.assertEqual(self.app.current_lang, 'en')
         self.app.keyboard_switcher.toggle.assert_called_once_with('fr', ['en', 'fr'])
-        self.assertEqual(self.app.current_lang, 'en')
-        self.app._on_press(keyboard.KeyCode.from_char('/', vk=44))
-        self.app.keyboard_switcher.toggle.assert_called_once()
 
-    def test_failed_switch_still_removes_deleted_character_from_buffer(self):
-        self.app.word_buffer = 'l'
+    def test_failed_correction_retry_never_rewrites_or_flashes(self):
+        self.setup_virtual_layouts()
+        self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(44, '/'))
+        self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(51))
+        self.app.keyboard_switcher.toggle.side_effect = None
         self.app.keyboard_switcher.toggle.return_value = None
-        self.app._on_press(keyboard.KeyCode.from_char("'", vk=39))
-        self.assertEqual(self.app.word_buffer, "l'")
-        self.app._on_press(keyboard.Key.backspace)
-        self.assertEqual(self.app.word_buffer, 'l')
+        retry = self.raw_key(44, '/')
+        self.app._intercept_event(Quartz.kCGEventKeyDown, retry)
+        self.assertEqual(self.text(retry), '/')
         self.assertEqual(self.app.current_lang, 'en')
+        self.app._layout_overlay.show_language.assert_not_called()
+
+    def test_retry_deadline_starts_at_backspace_and_expires_at_exact_cutoff(self):
+        for delay, expected in ((2.499, 'é'), (2.5, '/'), (3.0, '/')):
+            with self.subTest(delay=delay):
+                self.app._reset_detection()
+                self.app.current_lang = 'en'
+                self.setup_virtual_layouts()
+                self.app.keyboard_switcher.toggle.reset_mock()
+                self.app._layout_overlay.show_language.reset_mock()
+                self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(44, '/'))
+                self.now[0] += 2.0
+                self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(51))
+                self.now[0] += delay
+                retry = self.raw_key(44, '/')
+                self.app._intercept_event(Quartz.kCGEventKeyDown, retry)
+                self.assertEqual(self.text(retry), expected)
+                self.assertEqual(self.app.keyboard_switcher.toggle.call_count, int(expected == 'é'))
+                self.assertEqual(self.app._layout_overlay.show_language.call_count, int(expected == 'é'))
+
+    def test_unrelated_input_or_extra_backspace_cancels_pending_retry(self):
+        for vk, text in ((8, 'c'), (51, ''), (123, ''), (49, ' ')):
+            with self.subTest(vk=vk):
+                self.app._reset_detection()
+                self.app.current_lang = 'en'
+                self.setup_virtual_layouts()
+                self.app.keyboard_switcher.toggle.reset_mock()
+                for key, value in ((44, '/'), (51, ''), (vk, text), (44, '/')):
+                    self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(key, value))
+                self.app.keyboard_switcher.toggle.assert_not_called()
+
+    def test_shift_does_not_refresh_pending_retry_deadline(self):
+        self.setup_virtual_layouts()
+        for vk, text in ((44, '/'), (51, '')):
+            self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(vk, text))
+        self.now[0] += 2.0
+        self.app._intercept_event(Quartz.kCGEventFlagsChanged,
+                                 self.raw_key(56, flags=Quartz.kCGEventFlagMaskShift))
+        self.now[0] += 0.5
+        retry = self.raw_key(44, '?', flags=Quartz.kCGEventFlagMaskShift)
+        self.app._intercept_event(Quartz.kCGEventKeyDown, retry)
+        self.assertEqual(self.text(retry), '?')
+        self.app.keyboard_switcher.toggle.assert_not_called()
+
+    def test_arming_retry_invalidates_already_queued_word_decision(self):
+        self.setup_virtual_layouts()
+        detector, epoch = self.app.language_detector, self.app._detection_epoch
+        result = Future()
+        result.set_result('fr')
+        for vk, text in ((44, '/'), (51, '')):
+            self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(vk, text))
+        self.app._finish_word(result, detector, epoch, 'synthetic')
+        self.app.keyboard_switcher.switch_to.assert_not_called()
+        self.app.keyboard_switcher.toggle.assert_not_called()
+
+    def test_missing_translation_cancels_retry_without_switching(self):
+        self.setup_virtual_layouts()
+        for vk, text in ((44, '/'), (51, '')):
+            self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(vk, text))
+        self.app.keyboard_switcher.translate_key.side_effect = None
+        self.app.keyboard_switcher.translate_key.return_value = None
+        retry = self.raw_key(44, '/')
+        self.app._intercept_event(Quartz.kCGEventKeyDown, retry)
+        self.assertEqual(self.text(retry), '/')
+        self.app.keyboard_switcher.toggle.assert_not_called()
+        self.app._layout_overlay.show_language.assert_not_called()
+
+    def test_rearming_retry_preserves_previous_rewritten_keyup(self):
+        self.setup_virtual_layouts()
+        for vk, text in ((44, '/'), (51, ''), (44, '/'), (51, '')):
+            self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(vk, text))
+        up = self.raw_key(44, '/', down=False)
+        self.app._intercept_event(Quartz.kCGEventKeyUp, up)
+        self.assertEqual(self.text(up), 'é')
+        self.assertIsNotNone(self.app._pending_correction)
 
     def test_ordinary_letters_break_correction_gesture(self):
         self.app._on_press(keyboard.KeyCode.from_vk(44))
@@ -324,7 +403,8 @@ class RuntimeTests(unittest.TestCase):
             self.app.keyboard_switcher.toggle.assert_not_called()
             now[0] += 0.2
             press(51)
-            self.assertEqual(self.app.current_lang, 'fr')
+            self.assertEqual(self.app.current_lang, 'en')
+            self.app._layout_overlay.show_language.assert_not_called()
             press(44, '/')  # Event may already have been translated as US.
             press(8, 'c')
         self.assertEqual(visible, 'éc')
@@ -358,9 +438,9 @@ class RuntimeTests(unittest.TestCase):
         self.app._input_source_changed()
         self.assertEqual(self.app.current_lang, 'fr')
         self.app._layout_overlay.show_language.assert_called_once_with('fr')
-        self.app._expected_retry = (44, 'fr')
+        self.app._pending_correction = (44, 'fr', self.now[0])
         self.app._input_source_changed()
-        self.assertEqual(self.app._expected_retry, (44, 'fr'))
+        self.assertEqual(self.app._pending_correction, (44, 'fr', self.now[0]))
         self.app._layout_overlay.show_language.assert_called_once_with('fr')
 
     def test_automatic_switch_shows_flag_only_when_switch_succeeds(self):
@@ -406,16 +486,16 @@ class RuntimeTests(unittest.TestCase):
 
     def test_command_shortcut_is_never_rewritten_as_retry(self):
         self.setup_virtual_layouts()
-        self.app._expected_retry = (44, 'fr')
+        self.app._pending_correction = (44, 'fr', self.now[0])
         event = self.raw_key(44, '/', flags=Quartz.kCGEventFlagMaskCommand)
         self.app._intercept_event(Quartz.kCGEventKeyDown, event)
         self.assertEqual(self.text(event), '/')
         self.app.keyboard_switcher.translate_key.assert_not_called()
-        self.assertIsNone(self.app._expected_retry)
+        self.assertIsNone(self.app._pending_correction)
 
     def test_paused_input_is_never_rewritten(self):
         self.app.detecting = False
-        self.app._expected_retry = (44, 'fr')
+        self.app._pending_correction = (44, 'fr', self.now[0])
         event = self.raw_key(44, '/')
         self.app._intercept_event(Quartz.kCGEventKeyDown, event)
         self.assertEqual(self.text(event), '/')
@@ -425,11 +505,11 @@ class RuntimeTests(unittest.TestCase):
         actual = self.setup_virtual_layouts()
         self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(44, '/'))
         self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(51))
-        actual['language'] = 'en'
+        actual['language'] = 'fr'
         event = self.raw_key(44, '/')
         self.app._intercept_event(Quartz.kCGEventKeyDown, event)
         self.assertEqual(self.text(event), '/')
-        self.assertEqual(self.app.current_lang, 'en')
+        self.assertEqual(self.app.current_lang, 'fr')
         self.app.keyboard_switcher.translate_key.assert_not_called()
 
     def test_option_backspace_deletes_word_without_switching(self):
@@ -440,6 +520,15 @@ class RuntimeTests(unittest.TestCase):
         self.app.keyboard_switcher.toggle.assert_not_called()
         self.assertEqual(self.app.frustration_detector.key_history, [])
         self.assertEqual(self.app.word_buffer, '')
+
+    def test_fresh_keypress_discards_stale_keyup_rewrite_but_autorepeat_preserves_it(self):
+        for repeat in (0, 1):
+            with self.subTest(repeat=repeat):
+                self.app._rewritten_keyups[44] = 'é'
+                event = self.raw_key(44, '/')
+                Quartz.CGEventSetIntegerValueField(event, Quartz.kCGKeyboardEventAutorepeat, repeat)
+                self.app._intercept_event(Quartz.kCGEventKeyDown, event)
+                self.assertEqual(self.app._rewritten_keyups.get(44), 'é' if repeat else None)
 
     def test_language_work_is_queued_outside_keyboard_event(self):
         self.app._word_executor = Mock()
