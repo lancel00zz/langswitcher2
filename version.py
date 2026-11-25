@@ -2,10 +2,10 @@
 LangSwitcher Version Information
 """
 
-__version__ = "2.0.8"
+__version__ = "2.0.9"
 __build__ = "20261125.2106"  # Build timestamp (set by build script)
 __version_full__ = f"{__version__} (build {__build__})"
 __app_name__ = "LangSwitcher"
-__author__ = "Lanceloz Inc."
-__description__ = "Automatic keyboard layout switcher based on language detection"
+__author__ = "Patrick Zakher"
+__description__ = "Automatic US<->CanadianFrench keyboard layout switcher based on language detection"
 
