@@ -87,12 +87,14 @@ OPTIONS = {
         'switchers',
         'switchers.keyboard',
         'switchers.macos',
+        'switchers.input_observer',
         'keyboard_events',
         'keyboard_access',
         'ui',
         'ui.menubar',
         'ui.settings',
         'ui.permissions_window',
+        'ui.layout_overlay',
     ],
     'excludes': [
         'test', 'tkinter', 'unittest', 'pydoc', 'distutils'

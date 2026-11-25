@@ -45,6 +45,12 @@ class RuntimeTests(unittest.TestCase):
         self.app.current_lang = 'en'
         self.app.detecting = True
         self.app._access_ready = True
+        self.app._closed = False
+        self.app._layout_overlay = Mock()
+        self.app._flag_preview_overlay = None
+        self.app._flag_preview_owner = None
+        self.app._layout_feedback_epoch = 0
+        self.app._menu = {'Show Keyboard Switch Flag': Mock()}
         self.app.keyboard_switcher = Mock()
         self.app.keyboard_switcher.sync_state.return_value = 'en'
         self.app.keyboard_switcher.get_icon.return_value = 'flag'
@@ -56,7 +62,11 @@ class RuntimeTests(unittest.TestCase):
                        'detection.min_word_length': '4',
                        'detection.model_confidence_threshold': '0.9',
                        'detection.fallback_to_buffer_on_ambiguous': False,
-                       'frustration.enabled': False})
+                       'frustration.enabled': False,
+                       'flag_overlay.enabled': False,
+                       'flag_overlay.size_percent': '190',
+                       'flag_overlay.position': 'top_left',
+                       'flag_overlay.opacity_percent': '35'})
         self.app.word_buffer = 'pending'
         self.app.apply_settings(values)
         language = self.app.language_detector
@@ -64,6 +74,11 @@ class RuntimeTests(unittest.TestCase):
                           language.min_word_length, language.confidence_threshold), (7, 7, 5, 4, 0.9))
         self.assertFalse(language.fallback_to_buffer)
         self.assertFalse(self.app.config.frustration.enabled)
+        self.assertFalse(self.app.config.flag_overlay.enabled)
+        self.assertEqual((self.app.config.flag_overlay.size_percent,
+                          self.app.config.flag_overlay.position,
+                          self.app.config.flag_overlay.opacity_percent), (190, 'top_left', 35))
+        self.app._layout_overlay.configure.assert_called_once_with(self.app.config.flag_overlay)
         self.assertEqual(self.app.word_buffer, '')
         self.assertEqual(Config(self.config.config_path).editable_values(), self.app.config.editable_values())
 
@@ -80,6 +95,67 @@ class RuntimeTests(unittest.TestCase):
         self.assertIs(self.app.frustration_detector, old_frustration)
         self.assertEqual(self.app.language_detector.switch_threshold, 3)
 
+    def test_flag_menu_toggle_persists_and_syncs_settings_without_resetting_detection(self):
+        language, frustration = self.app.language_detector, self.app.frustration_detector
+        self.app.prefs_window = Mock()
+        self.app.toggle_flag_view(Mock())
+        self.assertFalse(self.app.config.flag_overlay.enabled)
+        self.assertFalse(Config(self.config.config_path).flag_overlay.enabled)
+        self.assertEqual(self.app.menu['Show Keyboard Switch Flag'].state, 0)
+        self.app.prefs_window.set_flag_enabled.assert_called_once_with(False)
+        self.assertTrue(self.app.detecting)
+        self.assertIs(self.app.language_detector, language)
+        self.assertIs(self.app.frustration_detector, frustration)
+        self.app._queue_layout_feedback('fr')
+        self.app._layout_overlay.show_language.assert_not_called()
+
+    def test_failed_menu_toggle_save_keeps_live_flag_visibility(self):
+        with patch.object(Config, 'save', side_effect=OSError('disk full')), \
+                patch('ui.menubar.rumps.alert'), self.assertLogs(level='ERROR'):
+            self.app.toggle_flag_view(Mock())
+        self.assertTrue(self.app.config.flag_overlay.enabled)
+        self.app._layout_overlay.configure.assert_not_called()
+
+    def test_flag_preview_uses_unsaved_appearance_without_saving_or_enabling_automatic_flags(self):
+        owner = Mock()
+        owner.is_flag_preview_active.return_value = True
+        self.app.prefs_window = owner
+        self.app._flag_preview_overlay = Mock()
+        self.app.config.flag_overlay.enabled = False
+        before = self.app.config.editable_values()
+        values = dict(before)
+        values.update({'flag_overlay.size_percent': '210', 'flag_overlay.position': 'bottom_right',
+                       'flag_overlay.opacity_percent': '75'})
+        self.app._preview_flag_settings(owner, values)
+        appearance = self.app._flag_preview_overlay.configure.call_args.args[0]
+        self.assertEqual((appearance.enabled, appearance.size_percent, appearance.position,
+                          appearance.opacity_percent), (True, 210, 'bottom_right', 75))
+        self.app._flag_preview_overlay.show_preview.assert_called_once_with('en')
+        self.assertEqual(self.app.config.editable_values(), before)
+        self.assertFalse(self.config.config_path.exists())
+        self.app._layout_overlay.close.assert_called_once()
+        self.app.config.flag_overlay.enabled = True
+        self.app._queue_layout_feedback('fr')
+        self.app._display_layout_feedback('fr', self.app._layout_feedback_epoch)
+        self.app._layout_overlay.show_language.assert_not_called()
+        self.app._preview_flag_settings(owner, None)
+        self.app._flag_preview_overlay.close.assert_called_once()
+        self.assertIsNone(self.app._flag_preview_owner)
+
+    def test_late_preview_callbacks_cannot_reopen_or_close_another_settings_preview(self):
+        owner, stale = Mock(), Mock()
+        owner.is_flag_preview_active.return_value = False
+        self.app.prefs_window = owner
+        self.app._flag_preview_overlay = Mock()
+        values = self.config.editable_values()
+        self.app._preview_flag_settings(owner, values)
+        self.app._preview_flag_settings(stale, values)
+        self.app._flag_preview_overlay.show_preview.assert_not_called()
+        self.app._flag_preview_owner = owner
+        self.app._stop_flag_preview(stale)
+        self.app._flag_preview_overlay.close.assert_not_called()
+        self.assertIs(self.app._flag_preview_owner, owner)
+
     def test_detector_preparation_failure_does_not_write_settings(self):
         with patch.object(self.app, '_make_detectors', side_effect=RuntimeError('init failed')):
             with self.assertRaises(RuntimeError):
@@ -93,7 +169,7 @@ class RuntimeTests(unittest.TestCase):
         self.app.frustration_detector = detector
         self.app.word_buffer = 'word'
         self.app._on_press(keyboard.Key.backspace)
-        detector.track_key_event.assert_called_once_with('backspace', 'backspace')
+        detector.track_key_event.assert_called_once_with('backspace', 'backspace', text=None)
         self.assertEqual(self.app.word_buffer, 'wor')
         detector.reset_mock()
         self.app._on_press(keyboard.Key.delete)
@@ -230,6 +306,93 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(observed, ['/' if i % 2 == 0 else 'é' for i in range(101)])
         self.assertEqual(self.app.keyboard_switcher.toggle.call_count, 100)
 
+    def test_ecole_correction_deletes_suffix_before_switching(self):
+        self.setup_virtual_layouts()
+        now = [10.0]
+        visible = ''
+        def press(vk, text=''):
+            nonlocal visible
+            event = self.raw_key(vk, text)
+            self.app._intercept_event(Quartz.kCGEventKeyDown, event)
+            visible = visible[:-1] if vk == 51 else visible + self.text(event)
+        with patch('detectors.frustration.time.monotonic', lambda: now[0]):
+            press(44, '/')
+            press(8, 'c')
+            now[0] += 2.0
+            press(51)
+            self.assertEqual(visible, '/')
+            self.app.keyboard_switcher.toggle.assert_not_called()
+            now[0] += 0.2
+            press(51)
+            self.assertEqual(self.app.current_lang, 'fr')
+            press(44, '/')  # Event may already have been translated as US.
+            press(8, 'c')
+        self.assertEqual(visible, 'éc')
+        self.app.keyboard_switcher.toggle.assert_called_once_with('en', ['en', 'fr'])
+        self.app._layout_overlay.show_language.assert_called_once_with('fr')
+
+    def test_expired_ecole_correction_is_an_ordinary_edit(self):
+        self.setup_virtual_layouts()
+        now = [10.0]
+        with patch('detectors.frustration.time.monotonic', lambda: now[0]):
+            for vk, text in ((44, '/'), (8, 'c')):
+                self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(vk, text))
+            now[0] += 2.5
+            for _ in range(2):
+                self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(51))
+            retry = self.raw_key(44, '/')
+            self.app._intercept_event(Quartz.kCGEventKeyDown, retry)
+        self.assertEqual(self.text(retry), '/')
+        self.assertEqual(self.app.current_lang, 'en')
+        self.app.keyboard_switcher.toggle.assert_not_called()
+        self.app._layout_overlay.show_language.assert_not_called()
+
+    def test_new_word_cancels_a_previous_words_correction(self):
+        for key in (keyboard.KeyCode.from_char('/', vk=44), keyboard.KeyCode.from_char(' '),
+                    keyboard.KeyCode.from_char('c', vk=8), keyboard.Key.backspace, keyboard.Key.backspace):
+            self.app._on_press(key)
+        self.app.keyboard_switcher.toggle.assert_not_called()
+
+    def test_manual_layout_change_shows_one_flag_and_own_notification_preserves_retry(self):
+        self.app.keyboard_switcher.sync_state.return_value = 'fr'
+        self.app._input_source_changed()
+        self.assertEqual(self.app.current_lang, 'fr')
+        self.app._layout_overlay.show_language.assert_called_once_with('fr')
+        self.app._expected_retry = (44, 'fr')
+        self.app._input_source_changed()
+        self.assertEqual(self.app._expected_retry, (44, 'fr'))
+        self.app._layout_overlay.show_language.assert_called_once_with('fr')
+
+    def test_automatic_switch_shows_flag_only_when_switch_succeeds(self):
+        self.app.keyboard_switcher.switch_to.return_value = False
+        self.app._switch_to_language('fr')
+        self.app._layout_overlay.show_language.assert_not_called()
+        self.app.keyboard_switcher.switch_to.return_value = True
+        self.app._switch_to_language('fr')
+        self.app._layout_overlay.show_language.assert_called_once_with('fr')
+
+    def test_stale_feedback_and_feedback_after_close_are_ignored(self):
+        with patch('ui.menubar.AppHelper.callAfter') as defer:
+            self.app._queue_layout_feedback('fr')
+            self.app._queue_layout_feedback('en')
+        for call in defer.call_args_list:
+            callback, *args = call.args
+            callback(*args)
+        self.app._layout_overlay.show_language.assert_called_once_with('en')
+        self.app.config.flag_overlay.enabled = False
+        self.app._display_layout_feedback('en', self.app._layout_feedback_epoch)
+        self.app._layout_overlay.show_language.assert_called_once_with('en')
+        self.app._closed = True
+        self.app._display_layout_feedback('en', self.app._layout_feedback_epoch)
+        self.app._layout_overlay.show_language.assert_called_once_with('en')
+
+    def test_flag_failure_does_not_break_a_layout_switch(self):
+        self.app.keyboard_switcher.switch_to.return_value = True
+        self.app._layout_overlay.show_language.side_effect = RuntimeError('window unavailable')
+        with self.assertLogs(level='ERROR'):
+            self.app._switch_to_language('fr')
+        self.assertEqual(self.app.current_lang, 'fr')
+
     def test_retry_uses_shift_flags_and_matches_keyup(self):
         self.setup_virtual_layouts()
         self.app._intercept_event(Quartz.kCGEventKeyDown, self.raw_key(44, '/'))
@@ -311,6 +474,8 @@ class PermissionRecoveryTests(unittest.TestCase):
         self.executor = self.stack.enter_context(patch('ui.menubar.ThreadPoolExecutor')).return_value
         self.switcher = self.stack.enter_context(patch('ui.menubar.KeyboardSwitcher')).return_value
         self.tap = self.stack.enter_context(patch('ui.menubar.KeyboardEventTap')).return_value
+        self.stack.enter_context(patch('ui.menubar.LayoutOverlay'))
+        self.stack.enter_context(patch('ui.menubar.InputSourceObserver'))
         self.deferred = self.stack.enter_context(patch('ui.menubar.AppHelper.callAfter'))
         self.stack.enter_context(patch('ui.menubar.rumps.MenuItem'))
         self.stack.enter_context(patch.object(LangSwitcherApp, '_sync_with_macos'))
@@ -421,12 +586,16 @@ class PermissionRecoveryTests(unittest.TestCase):
 
     def test_close_is_idempotent(self):
         app = self.make_app()
+        app._flag_preview_overlay = Mock()
+        app._flag_preview_owner = Mock()
         self.tap.stop.reset_mock()
         app.close()
         app.close()
         self.tap.stop.assert_called_once()
         self.switcher.close.assert_called_once()
         self.executor.shutdown.assert_called_once()
+        app._flag_preview_overlay.close.assert_called_once()
+        self.assertIsNone(app._flag_preview_owner)
 
 
 if __name__ == '__main__':
