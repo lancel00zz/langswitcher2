@@ -20,10 +20,12 @@ from config import Config
 from version import __version__, __app_name__, __author__
 from detectors import LanguageDetector, FrustrationDetector
 from switchers import KeyboardSwitcher
+from switchers.input_observer import InputSourceObserver
 from keyboard_events import KeyboardEventTap
 from keyboard_access import KeyboardAccessError, collect_access_report
 from ui.permissions_window import KeyboardAccessWindow
 from ui.settings import PrefsWindow
+from ui.layout_overlay import LayoutOverlay
 
 
 # Word boundary and backspace keys
@@ -74,6 +76,11 @@ class LangSwitcherApp(rumps.App):
         self._detection_requested = True
         self._access_report = None
         self._permissions_window = None
+        self._layout_overlay = None
+        self._flag_preview_overlay = None
+        self._flag_preview_owner = None
+        self._input_source_observer = None
+        self._layout_feedback_epoch = 0
         self._closed = False
         
         # Initialize icon
@@ -87,9 +94,10 @@ class LangSwitcherApp(rumps.App):
             name=__app_name__,
             icon=None,
             title=icon_emoji,
-            menu=["Pause LangSwitcher", "Keyboard Access…", "Open Debug Console", "Settings…", "Quit", None, version_item],
+            menu=["Pause LangSwitcher", "Show Keyboard Switch Flag", "Keyboard Access…", "Open Debug Console", "Settings…", "Quit", None, version_item],
             quit_button=None
         )
+        self.menu["Show Keyboard Switch Flag"].state = int(config.flag_overlay.enabled)
         
         try:
             self.keyboard_switcher = KeyboardSwitcher(
@@ -107,6 +115,15 @@ class LangSwitcherApp(rumps.App):
             # in setup mode until the actual keyboard access check succeeds.
             self._event_tap = KeyboardEventTap(self._intercept_event)
             report = self._try_keyboard_access()
+            try:
+                self._layout_overlay = LayoutOverlay.alloc().init()
+                self._apply_flag_view_settings()
+                self._input_source_observer = InputSourceObserver.alloc().initWithCallback_(
+                    self._input_source_changed
+                )
+                self._input_source_observer.start()
+            except Exception:
+                logging.exception("Could not start keyboard layout feedback")
         except Exception:
             self.close()
             raise
@@ -194,7 +211,72 @@ class LangSwitcherApp(rumps.App):
             self.language_detector = language
             self.frustration_detector = frustration
             self._reset_detection()
+            self._apply_flag_view_settings()
             logging.info("[SETTINGS] Saved and applied settings to live detectors")
+
+    def _apply_flag_view_settings(self):
+        """Apply saved visibility and appearance without touching layout selection."""
+        self._layout_feedback_epoch += 1
+        self.menu["Show Keyboard Switch Flag"].state = int(self.config.flag_overlay.enabled)
+        if self._layout_overlay is not None:
+            try:
+                self._layout_overlay.configure(self.config.flag_overlay)
+            except Exception:
+                logging.exception("Could not apply keyboard switch flag settings")
+
+    def _preview_flag_settings(self, owner, values):
+        """Display unsaved appearance in a separate, persistent preview."""
+        if self._closed or owner is not getattr(self, 'prefs_window', None):
+            return
+        if values is None:
+            self._stop_flag_preview(owner)
+            return
+        if not owner.is_flag_preview_active():
+            return
+        try:
+            form_values = self.config.editable_values()
+            for name in ('size_percent', 'position', 'opacity_percent'):
+                key = 'flag_overlay.' + name
+                form_values[key] = values[key]
+            # The explicit preview also works when automatic flags are off.
+            form_values['flag_overlay.enabled'] = True
+            appearance = self.config.with_settings(form_values).flag_overlay
+            if self._flag_preview_overlay is None:
+                self._flag_preview_overlay = LayoutOverlay.alloc().init()
+            if self._flag_preview_owner is None:
+                self._layout_feedback_epoch += 1
+                if self._layout_overlay is not None:
+                    self._layout_overlay.close()
+            self._flag_preview_overlay.configure(appearance)
+            if self._flag_preview_overlay.show_preview(self.current_lang):
+                self._flag_preview_owner = owner
+        except Exception:
+            logging.exception("Could not display the keyboard switch flag preview")
+
+    def _stop_flag_preview(self, owner=None):
+        if owner is not None and owner is not self._flag_preview_owner:
+            return
+        self._flag_preview_owner = None
+        if self._flag_preview_overlay is not None:
+            self._flag_preview_overlay.close()
+
+    @rumps.clicked("Show Keyboard Switch Flag")
+    def toggle_flag_view(self, _sender):
+        """Persist the root-menu toggle without pausing keyboard detection."""
+        try:
+            values = self.config.editable_values()
+            values['flag_overlay.enabled'] = not self.config.flag_overlay.enabled
+            candidate = self.config.with_settings(values)
+            candidate.save()
+        except Exception:
+            logging.exception("Could not save keyboard switch flag visibility")
+            rumps.alert("Could not save flag visibility", "Please try again. Your previous setting is still active.")
+            return
+        self.config = candidate
+        self._apply_flag_view_settings()
+        prefs = getattr(self, 'prefs_window', None)
+        if prefs is not None:
+            prefs.set_flag_enabled(candidate.flag_overlay.enabled)
 
     def _reset_detection(self):
         self.word_buffer = ""
@@ -238,9 +320,33 @@ class LangSwitcherApp(rumps.App):
                 self.base_icon = icon
                 self._update_icon()
             self._reset_detection()
+            self._queue_layout_feedback(actual_lang)
             logging.info(f"[SYNC] Synchronized to {actual_lang}")
             return True
         return False
+
+    def _input_source_changed(self):
+        """Observe manual source changes without resetting our own queued retry."""
+        if not self._closed:
+            self._sync_with_macos()
+
+    def _queue_layout_feedback(self, lang):
+        """Create/display Cocoa windows after forwarding the keyboard event."""
+        if (self._layout_overlay is None or self._closed or not self.config.flag_overlay.enabled
+                or self._flag_preview_owner is not None):
+            return
+        self._layout_feedback_epoch += 1
+        AppHelper.callAfter(self._display_layout_feedback, lang, self._layout_feedback_epoch)
+
+    def _display_layout_feedback(self, lang, epoch):
+        if (self._closed or epoch != self._layout_feedback_epoch or not self.config.flag_overlay.enabled
+                or self._flag_preview_owner is not None):
+            return
+        try:
+            self._layout_overlay.show_language(lang)
+        except Exception:
+            # A visual indicator must never break keyboard correction.
+            logging.exception("Could not display the keyboard layout flag")
     
     def _update_icon(self):
         """Update menu bar icon with pause indicator if paused"""
@@ -302,9 +408,15 @@ class LangSwitcherApp(rumps.App):
     @rumps.clicked("Settings…")
     def settings(self, _):
         """Open settings window"""
+        previous = getattr(self, 'prefs_window', None)
+        if previous is not None:
+            previous.stop_flag_preview()
+            self._stop_flag_preview(previous)
+            previous.win.orderOut_(None)
         # Always create fresh window to get updated HTML/CSS
         self.prefs_window = PrefsWindow.alloc().initWithConfig_(self.config)
         self.prefs_window.on_save = self.apply_settings
+        self.prefs_window.on_flag_preview = lambda values, owner=self.prefs_window: self._preview_flag_settings(owner, values)
         self.prefs_window.show()
     
     @rumps.clicked("Quit")
@@ -318,12 +430,19 @@ class LangSwitcherApp(rumps.App):
         if self._closed:
             return
         self._closed = True
+        self._flag_preview_owner = None
         self.detecting = False
         self._detection_requested = False
-        for resource in (self._event_tap, self.keyboard_switcher):
+        for resource, method in (
+            (self._input_source_observer, 'close'),
+            (self._event_tap, 'stop'),
+            (self.keyboard_switcher, 'close'),
+            (self._layout_overlay, 'close'),
+            (self._flag_preview_overlay, 'close'),
+        ):
             if resource is not None:
                 try:
-                    resource.stop() if resource is self._event_tap else resource.close()
+                    getattr(resource, method)()
                 except Exception:
                     logging.exception("Could not close keyboard resources")
         self._word_executor.shutdown(wait=False, cancel_futures=True)
@@ -405,11 +524,16 @@ class LangSwitcherApp(rumps.App):
 
             # Send each physical key exactly once, including keys that cancel
             # a pending correction gesture. Forward Delete is handled above.
+            ch = getattr(key, 'char', None)
             if self.config.frustration.enabled:
                 is_backspace = key == keyboard.Key.backspace
                 vk_code = 'backspace' if is_backspace else getattr(key, 'vk', None)
                 event_type = 'backspace' if is_backspace else 'key'
-                if self.frustration_detector.track_key_event(vk_code, event_type):
+                if (isinstance(key, keyboard.Key) and not is_backspace
+                        and key not in WORD_BOUNDARY_KEYS):
+                    # Function/media keys do not insert a deletable character.
+                    self.frustration_detector.clear_history()
+                elif self.frustration_detector.track_key_event(vk_code, event_type, text=ch):
                     # Mirror this Backspace in our buffer even if the native
                     # layout change fails; the real event is always forwarded.
                     if is_backspace:
@@ -421,7 +545,6 @@ class LangSwitcherApp(rumps.App):
                 self.word_buffer = self.word_buffer[:-1]
                 return
 
-            ch = getattr(key, 'char', None)
             if ch and (ch.isalpha() or ch in self.config.detection.valid_punctuation):
                 self.word_buffer += ch
             elif (ch and ch.isspace()) or key in WORD_BOUNDARY_KEYS:
@@ -481,6 +604,7 @@ class LangSwitcherApp(rumps.App):
                 self.base_icon = icon
                 self._update_icon()
             self._reset_detection()
+            self._queue_layout_feedback(target_lang)
             logging.info(f"[SWITCH] → {target_lang.upper()} (trigger: '{trigger_word}')")
     
     def _handle_frustration(self):
@@ -503,6 +627,7 @@ class LangSwitcherApp(rumps.App):
             # Start clean after the switch; the next correction can toggle immediately.
             self._reset_detection()
             self._expected_retry = (trigger_vk, target_lang)
+            self._queue_layout_feedback(target_lang)
 
             logging.info(f"[FRUSTRATION] Switched to {target_lang} - user will retype")
             # No auto-replay - user retypes naturally!

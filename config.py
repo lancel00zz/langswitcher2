@@ -45,6 +45,38 @@ class FrustrationConfig:
 
 
 @dataclass
+class FlagOverlayConfig:
+    """Appearance of the brief keyboard-layout flag; 100% is 390 by 234 px."""
+    enabled: bool = True
+    size_percent: int = 160
+    position: str = 'center'
+    opacity_percent: int = 50
+
+    def validate(self):
+        if type(self.enabled) is not bool:
+            raise ValueError('flag_overlay.enabled must be a boolean')
+        for name, minimum, maximum in (
+                ('size_percent', 50, 250), ('opacity_percent', 20, 100)):
+            value = getattr(self, name)
+            if type(value) is not int or not minimum <= value <= maximum:
+                raise ValueError(f'flag_overlay.{name} must be an integer between {minimum} and {maximum}')
+        if self.position not in ('center', 'top_left', 'top_right', 'bottom_left', 'bottom_right'):
+            raise ValueError('flag_overlay.position must be center, top_left, top_right, bottom_left, or bottom_right')
+
+
+def _overlay_integer(value, name):
+    """Parse integer form fields without silently truncating fractional values."""
+    if type(value) is int:
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    raise ValueError(f'{name} must be an integer')
+
+
+@dataclass
 class LanguageConfig:
     """Language and layout configuration"""
     detection_langs: Tuple[str, ...] = ("en", "fr")
@@ -89,6 +121,7 @@ class Config:
     def __init__(self, config_path: str = None):
         self.detection = DetectionConfig()
         self.frustration = FrustrationConfig()
+        self.flag_overlay = FlagOverlayConfig()
         self.language = LanguageConfig()
         self.app = AppConfig()
         
@@ -161,6 +194,16 @@ class Config:
                 frust = data['frustration']
                 if 'enabled' in frust:
                     candidate.frustration.enabled = bool(frust['enabled'])
+            if 'flag_overlay' in data:
+                overlay = data['flag_overlay']
+                if 'enabled' in overlay:
+                    candidate.flag_overlay.enabled = overlay['enabled']
+                for name in ('size_percent', 'opacity_percent'):
+                    if name in overlay:
+                        setattr(candidate.flag_overlay, name,
+                                _overlay_integer(overlay[name], f'flag_overlay.{name}'))
+                if 'position' in overlay:
+                    candidate.flag_overlay.position = overlay['position']
             if 'app' in data:
                 app = data['app']
                 if 'debug_log_path' in app:
@@ -170,6 +213,7 @@ class Config:
             candidate.validate()
             self.detection = candidate.detection
             self.frustration = candidate.frustration
+            self.flag_overlay = candidate.flag_overlay
             self.app = candidate.app
         except Exception as e:
             print(f"Warning: Failed to load config from {self.config_path}: {e}")
@@ -183,6 +227,10 @@ class Config:
             'detection.model_confidence_threshold': self.detection.model_confidence_threshold,
             'detection.fallback_to_buffer_on_ambiguous': self.detection.fallback_to_buffer_on_ambiguous,
             'frustration.enabled': self.frustration.enabled,
+            'flag_overlay.enabled': self.flag_overlay.enabled,
+            'flag_overlay.size_percent': self.flag_overlay.size_percent,
+            'flag_overlay.position': self.flag_overlay.position,
+            'flag_overlay.opacity_percent': self.flag_overlay.opacity_percent,
         }
 
     def with_settings(self, values):
@@ -197,6 +245,8 @@ class Config:
                     value = value.lower() in ('true', '1')
                 elif not isinstance(value, bool):
                     raise ValueError(f"Invalid boolean for {key}")
+            elif key in ('flag_overlay.size_percent', 'flag_overlay.opacity_percent'):
+                value = _overlay_integer(value, key)
             else:
                 value = type(old_value)(value)
             section, name = key.split('.')
@@ -211,6 +261,7 @@ class Config:
             'schema_version': self.SCHEMA_VERSION,
             'detection': asdict(self.detection),
             'frustration': asdict(self.frustration),
+            'flag_overlay': asdict(self.flag_overlay),
             'app': asdict(self.app),
         }
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,6 +284,7 @@ class Config:
     def validate(self):
         """Validate all configuration sections"""
         self.detection.validate()
+        self.flag_overlay.validate()
         self.language.validate()
 
 

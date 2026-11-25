@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import json
+import logging
 from Cocoa import (
     NSAlert,
     NSApp,
@@ -55,6 +56,13 @@ class PrefsWindow(NSObject):
         self.config = config
         
         self.on_save = None
+        self.on_flag_preview = None
+        self._flag_preview_active = False
+        self._preview_session = 0
+        self._window_open = False
+        self._saving = False
+        self._webview_loaded = False
+        self._pending_flag_enabled = None
 
         # Create window
         WIDTH, HEIGHT = 600, 650
@@ -66,6 +74,8 @@ class PrefsWindow(NSObject):
             False
         )
         self.win.setTitle_("Settings")
+        self.win.setReleasedWhenClosed_(False)
+        self.win.setDelegate_(self)
         self.win.center()
         
         self.__build_ui()
@@ -80,6 +90,7 @@ class PrefsWindow(NSObject):
         # Create WebView
         webview_rect = NSMakeRect(0, 60, W, H - 60)
         self.webview = WKWebView.alloc().initWithFrame_(webview_rect)
+        self.webview.setNavigationDelegate_(self)
         
         # Setup message handler for JavaScript communication
         message_handler = MessageHandler.alloc().initWithCallback_(self.handle_save)
@@ -112,6 +123,15 @@ class PrefsWindow(NSObject):
     
     def __generate_html(self):
         """Generate HTML content for settings"""
+        positions = (
+            ("center", "Center"), ("top_left", "Top left"),
+            ("top_right", "Top right"), ("bottom_left", "Bottom left"),
+            ("bottom_right", "Bottom right"),
+        )
+        position_options = "\n".join(
+            f'<option value="{value}"{" selected" if self.config.flag_overlay.position == value else ""}>{label}</option>'
+            for value, label in positions
+        )
         return f"""
 <!DOCTYPE html>
 <html>
@@ -194,6 +214,37 @@ input[type="checkbox"] {{
     vertical-align: middle;
 }}
 
+.slider-control {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0;
+}}
+
+.slider-control input[type="range"] {{
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+}}
+
+.slider-control output {{
+    min-width: 42px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}}
+
+select {{
+    width: 95%;
+    font: inherit;
+    margin: 3px 0;
+}}
+
+.flag-preview-link {{
+    margin-left: 10px;
+    font-size: 12px;
+    color: #1769aa;
+}}
+
 .readonly {{
     color: #888;  /* Grey for read-only */
     font-style: italic;
@@ -202,6 +253,39 @@ input[type="checkbox"] {{
 </style>
 </head>
 <body>
+
+<details open>
+<summary>Keyboard switch flag</summary>
+<table>
+<tr>
+    <td><label for="flag_overlay.enabled">Show flag on keyboard switch</label></td>
+    <td><input type="checkbox" id="flag_overlay.enabled" {'checked' if self.config.flag_overlay.enabled else ''}>
+        <a href="#" id="flag-preview-link" class="flag-preview-link" onclick="toggleFlagPreview(); return false;">Display flag</a></td>
+</tr>
+<tr>
+    <td><label for="flag_overlay.size_percent">Flag size</label></td>
+    <td><div class="slider-control">
+        <input type="range" id="flag_overlay.size_percent" min="50" max="250" step="5" value="{self.config.flag_overlay.size_percent}"
+            oninput="document.getElementById('flag-size-value').textContent = this.value + '%'; updateFlagPreview();">
+        <output id="flag-size-value" for="flag_overlay.size_percent">{self.config.flag_overlay.size_percent}%</output>
+    </div></td>
+</tr>
+<tr>
+    <td><label for="flag_overlay.position">Position</label></td>
+    <td><select id="flag_overlay.position" onchange="updateFlagPreview();">
+        {position_options}
+    </select></td>
+</tr>
+<tr>
+    <td><label for="flag_overlay.opacity_percent">Opacity</label></td>
+    <td><div class="slider-control">
+        <input type="range" id="flag_overlay.opacity_percent" min="20" max="100" step="5" value="{self.config.flag_overlay.opacity_percent}"
+            oninput="document.getElementById('flag-opacity-value').textContent = this.value + '%'; updateFlagPreview();">
+        <output id="flag-opacity-value" for="flag_overlay.opacity_percent">{self.config.flag_overlay.opacity_percent}%</output>
+    </div></td>
+</tr>
+</table>
+</details>
 
 <details open>
 <summary>detection settings</summary>
@@ -231,7 +315,7 @@ input[type="checkbox"] {{
 
 <details open>
 <summary>frustration detection</summary>
-<p>Switch when a layout-specific key is immediately followed by Backspace. Retyping uses the new layout. Every correction can switch immediately, with no cooldown.</p>
+<p>Switch when Backspace deletes a layout-specific character, including after deleting characters typed after it. For example, type <code>/c</code>, then press Backspace twice: the switch happens when <code>/</code> is deleted. A space, Enter, or a 2.5-second pause ends the correction. Every new correction can switch immediately.</p>
 <table>
 <tr>
     <td>Enable Frustration detection</td>
@@ -299,6 +383,39 @@ input[type="checkbox"] {{
 </details>
 
 <script>
+let flagPreviewActive = false;
+let flagPreviewSession = 0;
+
+function setFlagPreviewState(active, session) {{
+    flagPreviewActive = active;
+    flagPreviewSession = session;
+    document.getElementById('flag-preview-link').textContent = active ? 'Hide flag' : 'Display flag';
+}}
+
+function flagPreviewValues() {{
+    return {{
+        'flag_overlay.enabled': document.getElementById('flag_overlay.enabled').checked,
+        'flag_overlay.size_percent': document.getElementById('flag_overlay.size_percent').value,
+        'flag_overlay.position': document.getElementById('flag_overlay.position').value,
+        'flag_overlay.opacity_percent': document.getElementById('flag_overlay.opacity_percent').value,
+    }};
+}}
+
+function toggleFlagPreview() {{
+    setFlagPreviewState(!flagPreviewActive, flagPreviewSession);
+    window.webkit.messageHandlers.saveHandler.postMessage({{
+        action: 'flag_preview_toggle', active: flagPreviewActive,
+        session: flagPreviewSession, values: flagPreviewValues(),
+    }});
+}}
+
+function updateFlagPreview() {{
+    if (!flagPreviewActive) return;
+    window.webkit.messageHandlers.saveHandler.postMessage({{
+        action: 'flag_preview_update', session: flagPreviewSession, values: flagPreviewValues(),
+    }});
+}}
+
 function getFormValues() {{
     const getValue = (id) => {{
         const el = document.getElementById(id);
@@ -315,6 +432,10 @@ function getFormValues() {{
     }};
     
     return {{
+        'flag_overlay.enabled': getValue('flag_overlay.enabled'),
+        'flag_overlay.size_percent': getValue('flag_overlay.size_percent'),
+        'flag_overlay.position': getValue('flag_overlay.position'),
+        'flag_overlay.opacity_percent': getValue('flag_overlay.opacity_percent'),
         'detection.buffer_size': getValue('detection.buffer_size'),
         'detection.switch_threshold': getValue('detection.switch_threshold'),
         'detection.min_word_length': getValue('detection.min_word_length'),
@@ -328,20 +449,119 @@ function getFormValues() {{
 </body>
 </html>
 """
-    
+
+    @objc.python_method
+    def set_flag_enabled(self, enabled):
+        """Mirror a menu toggle without replacing unsaved form values."""
+        enabled = bool(enabled)
+        self.config.flag_overlay.enabled = enabled
+        self._pending_flag_enabled = enabled
+        if self._webview_loaded:
+            self._apply_pending_flag_enabled()
+
+    @objc.python_method
+    def _apply_pending_flag_enabled(self):
+        enabled = self._pending_flag_enabled
+        if enabled is None:
+            return
+        script = (
+            "document.getElementById('flag_overlay.enabled').checked = "
+            + json.dumps(enabled)
+        )
+        self.webview.evaluateJavaScript_completionHandler_(script, None)
+        self._pending_flag_enabled = None
+
+    def webView_didFinishNavigation_(self, _webview, _navigation):
+        self._webview_loaded = True
+        self._apply_pending_flag_enabled()
+        self._sync_flag_preview_link()
+
+    @objc.python_method
+    def is_flag_preview_active(self):
+        return self._flag_preview_active and self._window_open and not self._saving
+
+    @objc.python_method
+    def _sync_flag_preview_link(self):
+        if self._webview_loaded:
+            script = f"setFlagPreviewState({json.dumps(self._flag_preview_active)}, {self._preview_session})"
+            try:
+                self.webview.evaluateJavaScript_completionHandler_(script, None)
+            except Exception:
+                # Closing a stale WebView must not prevent preview cleanup.
+                logging.exception("Could not refresh the flag preview link")
+
+    @objc.python_method
+    def _hide_flag_preview(self):
+        was_active = self._flag_preview_active
+        self._flag_preview_active = False
+        if was_active and self.on_flag_preview is not None:
+            try:
+                self.on_flag_preview(None)
+            except Exception:
+                logging.exception("Could not close the flag preview")
+        self._sync_flag_preview_link()
+
+    @objc.python_method
+    def stop_flag_preview(self):
+        """Stop preview and invalidate bridge messages queued before this stop."""
+        self._preview_session += 1
+        self._hide_flag_preview()
+
+    @objc.python_method
     def handle_save(self, data):
-        """Handle save message from JavaScript"""
-        # This is called by JavaScript, not used currently
-        pass
+        """Handle live preview messages without changing or saving config."""
+        if not self._window_open or self._saving:
+            return
+        try:
+            data = dict(data)
+            if data.get('session', self._preview_session) != self._preview_session:
+                return
+            action = data.get('action')
+            if action == 'flag_preview_toggle':
+                active = data.get('active', not self._flag_preview_active)
+                if not active:
+                    self._hide_flag_preview()
+                    return
+            elif action == 'flag_preview_update':
+                if not self._flag_preview_active:
+                    return
+            else:
+                return
+            if self.on_flag_preview is None:
+                self._sync_flag_preview_link()
+                return
+            values = dict(data.get('values') or {})
+            flag_values = {
+                key: values[key] for key in (
+                    'flag_overlay.enabled', 'flag_overlay.size_percent',
+                    'flag_overlay.position', 'flag_overlay.opacity_percent',
+                )
+            }
+            # The app's ownership guard checks this before displaying a preview.
+            self._flag_preview_active = True
+            self.on_flag_preview(flag_values)
+        except Exception:
+            logging.exception("Could not update the flag preview")
+            self.stop_flag_preview()
     
     def save_(self, _):
         """Save settings"""
+        if not self._window_open or self._saving:
+            return
+        self._saving = True
+        self.stop_flag_preview()
         # Get values from HTML form via JavaScript
         script = "JSON.stringify(getFormValues())"
-        self.webview.evaluateJavaScript_completionHandler_(script, self.process_save)
+        try:
+            self.webview.evaluateJavaScript_completionHandler_(script, self.process_save)
+        except Exception as exc:
+            self.process_save(None, exc)
     
     def process_save(self, result, error):
         """Process the form values from JavaScript"""
+        if not self._window_open:
+            self._saving = False
+            return
         try:
             if error:
                 raise ValueError("Could not read the settings form")
@@ -349,6 +569,7 @@ function getFormValues() {{
             if self.on_save is None:
                 raise RuntimeError("Settings callback is not available")
             self.on_save(values)
+            self._window_open = False
             self.win.orderOut_(None)
         except Exception as exc:
             # Keep the form open and retain the previous live settings on failure.
@@ -356,13 +577,23 @@ function getFormValues() {{
             alert.setMessageText_("Settings could not be saved")
             alert.setInformativeText_(str(exc))
             alert.runModal()
+        finally:
+            self._saving = False
 
     def cancel_(self, _):
         """Close without saving"""
+        self._window_open = False
+        self.stop_flag_preview()
         self.win.orderOut_(None)
+
+    def windowWillClose_(self, _notification):
+        self._window_open = False
+        self.stop_flag_preview()
     
     def show(self):
         """Show window (non-modal)"""
+        self._window_open = True
+        self._saving = False
         NSRunningApplication.currentApplication().activateWithOptions_(
             NSApplicationActivateIgnoringOtherApps
         )
