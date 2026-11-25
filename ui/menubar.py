@@ -5,6 +5,7 @@ Main application class for LangSwitcher menu bar app.
 """
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from PyObjCTools import AppHelper
 import Quartz
@@ -66,7 +67,7 @@ class LangSwitcherApp(rumps.App):
         self.config = config
         self._state_lock = threading.RLock()
         self._shortcut_keys_down = set()
-        self._expected_retry = None
+        self._pending_correction = None
         self._rewritten_keyups = {}
         self._detection_epoch = 0
         self._word_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='language-detection')
@@ -283,8 +284,7 @@ class LangSwitcherApp(rumps.App):
         self.language_detector = self.language_detector.fresh()
         self.frustration_detector.clear_history()
         self._detection_epoch += 1
-        self._expected_retry = None
-        self._rewritten_keyups.clear()
+        self._pending_correction = None
 
     def _get_script_dir(self) -> str:
         """Get directory containing bundled resources (im-select)"""
@@ -465,12 +465,17 @@ class LangSwitcherApp(rumps.App):
             return event
 
         if event_type == Quartz.kCGEventFlagsChanged:
-            if self._shortcut_keys_down:
+            if self._shortcut_keys_down or flags & Quartz.kCGEventFlagMaskAlternate:
                 self._reset_detection()
             return event
 
         if event_type != Quartz.kCGEventKeyDown:
             return event
+
+        if not Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventAutorepeat):
+            # A fresh physical press supersedes a release that macOS may have
+            # withheld; auto-repeat still belongs to the outstanding key-down.
+            self._rewritten_keyups.pop(vk, None)
 
         if vk == keyboard.Key.backspace.value.vk and flags & Quartz.kCGEventFlagMaskAlternate:
             # Option+Backspace deletes a whole word, not just the last key.
@@ -478,25 +483,10 @@ class LangSwitcherApp(rumps.App):
             return event
 
         if self.detecting and not self._shortcut_keys_down:
-            retry = self._expected_retry
-            if retry is not None and retry[0] == vk:
-                # The event can have been translated before the preceding
-                # Backspace changed the source. Repair that event in place.
-                if self.keyboard_switcher.get_current_layout() == retry[1]:
-                    text = self.keyboard_switcher.translate_key(vk, flags, retry[1])
-                    if text:
-                        Quartz.CGEventKeyboardSetUnicodeString(event, len(text.encode('utf-16-le')) // 2, text)
-                        self._rewritten_keyups[vk] = text
-                else:
-                    # A manual menu/source change supersedes the pending retry.
-                    self._sync_with_macos()
-                self._expected_retry = None
+            if self._pending_correction is not None:
+                self._confirm_correction(vk, flags, event)
             elif vk in self.frustration_detector.FRUSTRATION_ELIGIBLE_KEYS:
                 self._sync_with_macos()
-                self._expected_retry = None
-            elif vk not in {key.value.vk for key in MODIFIER_KEYS}:
-                self._expected_retry = None
-
         key = SPECIAL_KEYS_BY_VK.get(vk)
         if key is None:
             length, text = Quartz.CGEventKeyboardGetUnicodeString(event, 100, None, None)
@@ -521,6 +511,10 @@ class LangSwitcherApp(rumps.App):
             if self._shortcut_keys_down or key in EDITING_KEYS:
                 self._reset_detection()
                 return
+
+            # Confirmation happens in the tap before this key is decoded. Any
+            # other input, including another Backspace, cancels an armed retry.
+            self._pending_correction = None
 
             # Send each physical key exactly once, including keys that cancel
             # a pending correction gesture. Forward Delete is handled above.
@@ -608,27 +602,43 @@ class LangSwitcherApp(rumps.App):
             logging.info(f"[SWITCH] → {target_lang.upper()} (trigger: '{trigger_word}')")
     
     def _handle_frustration(self):
-        """Handle detected frustration pattern - switch layout, user retypes"""
-        # The preceding eligible physical key was synchronized in the tap.
-        # Do not add a subprocess or resync that can undo a rapid switch-back.
+        """Arm a correction when its layout-specific key has been deleted."""
         trigger_vk = self.frustration_detector.get_last_triggered_key()
+        if trigger_vk is None or self._sync_with_macos():
+            return
+        source_lang = self.current_lang
+        # Old word jobs must not switch the source while the retry is pending.
+        # Outstanding rewritten key-ups remain paired with their key-downs.
+        self._reset_detection()
+        self._pending_correction = (trigger_vk, source_lang, time.monotonic())
+        logging.debug("[FRUSTRATION] Correction armed for VK=%s", trigger_vk)
 
-        # Toggle to opposite language
-        available_langs = list(self.config.language.detection_langs)
-        target_lang = self.keyboard_switcher.toggle(self.current_lang, available_langs)
-        
-        if target_lang:
-            self.current_lang = target_lang
-            icon = self.keyboard_switcher.get_icon(target_lang)
-            if icon:
-                self.base_icon = icon
-                self._update_icon()
-            
-            # Start clean after the switch; the next correction can toggle immediately.
-            self._reset_detection()
-            self._expected_retry = (trigger_vk, target_lang)
-            self._queue_layout_feedback(target_lang)
-
-            logging.info(f"[FRUSTRATION] Switched to {target_lang} - user will retype")
-            # No auto-replay - user retypes naturally!
-
+    def _confirm_correction(self, vk, flags, event):
+        """Confirm on the same key, rewriting that original event after success."""
+        trigger_vk, source_lang, armed_at = self._pending_correction
+        self._pending_correction = None
+        if (vk != trigger_vk or time.monotonic() - armed_at >= self.frustration_detector.correction_timeout
+                or flags & (Quartz.kCGEventFlagMaskAlternate | Quartz.kCGEventFlagMaskCommand
+                            | Quartz.kCGEventFlagMaskControl)):
+            return False
+        if self.keyboard_switcher.get_current_layout() != source_lang:
+            self._sync_with_macos()
+            return False
+        available = list(self.config.language.detection_langs)
+        if source_lang not in available:
+            return False
+        target = available[(available.index(source_lang) + 1) % len(available)]
+        text = self.keyboard_switcher.translate_key(vk, flags, target)
+        if not text or self.keyboard_switcher.toggle(source_lang, available) != target:
+            return False
+        self.current_lang = target
+        icon = self.keyboard_switcher.get_icon(target)
+        if icon:
+            self.base_icon = icon
+            self._update_icon()
+        self._reset_detection()
+        Quartz.CGEventKeyboardSetUnicodeString(event, len(text.encode('utf-16-le')) // 2, text)
+        self._rewritten_keyups[vk] = text
+        self._queue_layout_feedback(target)
+        logging.info("[FRUSTRATION] Confirmed retry switched to %s", target)
+        return True

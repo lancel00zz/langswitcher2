@@ -2,7 +2,9 @@
 Frustration Pattern Detection Module
 
 Detects deletion of a layout-specific key, including after deleting a word suffix.
-The caller switches the layout; this detector never injects keystrokes.
+An eligible deletion lets the caller arm a retry; it does not switch the layout.
+The caller switches only when the same physical key is retried within 2.5 seconds.
+This detector never injects keystrokes.
 """
 
 import time
@@ -12,12 +14,12 @@ from typing import Optional, Dict, Any, List
 
 
 class FrustrationDetector:
-    """Detects frustration patterns in typing behavior"""
+    """Detects eligible deletions that can arm a same-key retry correction."""
 
     WORD_BOUNDARY_KEYS = {49, 36, 76}  # Space, Return, keypad Enter.
     
     # VK codes for keys that produce DIFFERENT characters in US vs French layouts
-    # Only these keys trigger automatic layout switching on frustration pattern
+    # Only deletion of these keys can arm a same-key retry correction.
     # Letters are NOT included - they're the same in both layouts
     FRUSTRATION_ELIGIBLE_KEYS = {
         # Punctuation/special keys (VK_code: description)
@@ -46,7 +48,7 @@ class FrustrationDetector:
         Args:
             time_window: Legacy configuration value; no longer gates gestures.
             cooldown: Legacy configuration value; no longer gates gestures.
-            correction_timeout: Maximum idle time between correction keystrokes.
+            correction_timeout: Maximum idle time while typing or deleting toward an eligible key.
         """
         correction_timeout = float(correction_timeout)
         if not math.isfinite(correction_timeout) or correction_timeout <= 0:
@@ -58,15 +60,17 @@ class FrustrationDetector:
         self.key_history: List[Dict[str, Any]] = []
         self._suffix_length = 0
         self._last_activity_time: Optional[float] = None
+        # Legacy diagnostic name: this records a deletion, not a layout switch.
         self.last_switch_time: Optional[float] = None
         self._last_triggered_key: Optional[Any] = None
     
     def track_key_event(self, vk_code: Any, event_type: str, text: Optional[str] = None) -> bool:
         """
-        Track a key event and check for frustration pattern
+        Track a key event and check whether an eligible character was deleted.
         
         Remember the most recent eligible key and how many characters follow
-        it within the current word. Only deleting that key requests a switch.
+        it within the current word. Deleting that key lets the caller arm a
+        retry; a later same-key press confirms the switch in the caller.
         Text is inspected for boundaries but never retained.
         
         Args:
@@ -75,7 +79,7 @@ class FrustrationDetector:
             text: Optional printable text, used only to recognize boundaries
             
         Returns:
-            True if frustration pattern detected on eligible key, False otherwise
+            True if an eligible key was deleted and a retry can be armed; False otherwise.
         """
         # After an idle pause, Backspace is an ordinary edit. Typing or deleting
         # the suffix keeps an active correction alive; there is no cooldown.
@@ -97,7 +101,7 @@ class FrustrationDetector:
             self._last_triggered_key = None
             if vk_code in self.FRUSTRATION_ELIGIBLE_KEYS:
                 # Only the latest eligible key can be reached first. The first
-                # switch consumes the entire deletion run, so older candidates
+                # eligible deletion consumes the run, so older candidates
                 # never need to be stored.
                 self.key_history = [event]
                 self._suffix_length = 0
@@ -114,10 +118,10 @@ class FrustrationDetector:
                 return False
             deleted = self.key_history.pop()
             vk_code = deleted['vk_code']
-            # Consume the deletion run: held/repeated Backspace cannot toggle
-            # again on another eligible key deeper in the same word.
+            # Consume the deletion run: held/repeated Backspace cannot arm
+            # another retry on an eligible key deeper in the same word.
             self.clear_history()
-            logging.info(f"[FRUSTRATION] Deleted layout-specific key VK={vk_code}")
+            logging.info(f"[FRUSTRATION] Eligible deletion for same-key retry VK={vk_code}")
             self.last_switch_time = now
             self._last_triggered_key = vk_code
             return True
@@ -127,15 +131,15 @@ class FrustrationDetector:
     
     def get_last_triggered_key(self) -> Optional[Any]:
         """
-        Get the VK code of the key that triggered the last frustration pattern
+        Get the physical key code for the most recent eligible deletion.
         
         Returns:
-            VK code or None if no recent pattern
+            VK code to match on the confirming retry, or None if no eligible deletion.
         """
         return self._last_triggered_key
     
     def clear_history(self):
-        """Clear key history (useful after a switch to prevent double-triggering)"""
+        """Clear deletion history so stale characters cannot arm another retry."""
         self.key_history.clear()
         self._suffix_length = 0
         self._last_activity_time = None

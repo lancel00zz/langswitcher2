@@ -30,7 +30,7 @@ class KeyboardSwitcher:
         return False
 
     def translate_key(self, vk_code: int, flags: int, lang: str) -> Optional[str]:
-        """Translate queued retry text in the layout selected on Backspace."""
+        """Translate the confirming retry key in the newly selected layout."""
         if lang not in self.layouts:
             return None
         return self.native.translate_key(self.layouts[lang][0], vk_code, flags)
